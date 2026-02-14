@@ -63,6 +63,12 @@ const (
 	FileAvatar     = "file"
 )
 
+var defaultAvatarPNG = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xb5, 0x1c, 0x0c, 0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xfc, 0xff, 0x1f, 0x00, 0x03, 0x03, 0x02, 0x00, 0xef, 0x97, 0xd9, 0x7d, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82}
+
+func serveDefaultAvatar(c *gin.Context) {
+	c.Data(http.StatusOK, "image/png", defaultAvatarPNG)
+}
+
 // Get 获取用户头像
 func (service *GetAvatarService) Get(c *gin.Context) error {
 	dep := dependency.FromContext(c)
@@ -82,7 +88,7 @@ func (service *GetAvatarService) Get(c *gin.Context) error {
 
 	// 未设定头像时，返回404错误
 	if user.Avatar == "" {
-		c.Status(404)
+		serveDefaultAvatar(c)
 		return nil
 	}
 
@@ -109,10 +115,12 @@ func (service *GetAvatarService) Get(c *gin.Context) error {
 		avatar, err := os.Open(filepath.Join(avatarRoot, fmt.Sprintf("avatar_%d.png", user.ID)))
 		if err != nil {
 			dep.Logger().Warning("Failed to open avatar file", err)
-			c.Status(404)
+			serveDefaultAvatar(c)
+			return nil
 		}
 		defer avatar.Close()
 
+		c.Header("Content-Type", "image/png")
 		http.ServeContent(c.Writer, c.Request, "avatar.png", user.UpdatedAt, avatar)
 		return nil
 	}
