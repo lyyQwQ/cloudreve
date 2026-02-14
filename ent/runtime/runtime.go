@@ -11,6 +11,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/file"
 	"github.com/cloudreve/Cloudreve/v4/ent/fsevent"
 	"github.com/cloudreve/Cloudreve/v4/ent/group"
+	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/ent/node"
 	"github.com/cloudreve/Cloudreve/v4/ent/oauthclient"
@@ -152,6 +153,20 @@ func init() {
 	groupDescSettings := groupFields[4].Descriptor()
 	// group.DefaultSettings holds the default value on creation for the settings field.
 	group.DefaultSettings = groupDescSettings.Default.(*types.GroupSetting)
+	hlsartifactFields := schema.HLSArtifact{}.Fields()
+	_ = hlsartifactFields
+	// hlsartifactDescSegmentCount is the schema descriptor for segment_count field.
+	hlsartifactDescSegmentCount := hlsartifactFields[2].Descriptor()
+	// hlsartifact.DefaultSegmentCount holds the default value on creation for the segment_count field.
+	hlsartifact.DefaultSegmentCount = hlsartifactDescSegmentCount.Default.(int)
+	// hlsartifactDescTotalSize is the schema descriptor for total_size field.
+	hlsartifactDescTotalSize := hlsartifactFields[3].Descriptor()
+	// hlsartifact.DefaultTotalSize holds the default value on creation for the total_size field.
+	hlsartifact.DefaultTotalSize = hlsartifactDescTotalSize.Default.(int64)
+	// hlsartifactDescCodec is the schema descriptor for codec field.
+	hlsartifactDescCodec := hlsartifactFields[4].Descriptor()
+	// hlsartifact.DefaultCodec holds the default value on creation for the codec field.
+	hlsartifact.DefaultCodec = hlsartifactDescCodec.Default.(string)
 	metadataMixin := schema.Metadata{}.Mixin()
 	metadataMixinHooks0 := metadataMixin[0].Hooks()
 	metadata.Hooks[0] = metadataMixinHooks0[0]

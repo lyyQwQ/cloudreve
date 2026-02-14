@@ -14,6 +14,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/directlink"
 	"github.com/cloudreve/Cloudreve/v4/ent/entity"
 	"github.com/cloudreve/Cloudreve/v4/ent/file"
+	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/ent/predicate"
 	"github.com/cloudreve/Cloudreve/v4/ent/share"
@@ -36,6 +37,7 @@ type FileQuery struct {
 	withEntities        *EntityQuery
 	withShares          *ShareQuery
 	withDirectLinks     *DirectLinkQuery
+	withHlsArtifact     *HLSArtifactQuery
 	// intermediate query (i.e. traversal path).
 	sql  *sql.Selector
 	path func(context.Context) (*sql.Selector, error)
@@ -248,6 +250,28 @@ func (fq *FileQuery) QueryDirectLinks() *DirectLinkQuery {
 	return query
 }
 
+// QueryHlsArtifact chains the current query on the "hls_artifact" edge.
+func (fq *FileQuery) QueryHlsArtifact() *HLSArtifactQuery {
+	query := (&HLSArtifactClient{config: fq.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := fq.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := fq.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(file.Table, file.FieldID, selector),
+			sqlgraph.To(hlsartifact.Table, hlsartifact.FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, false, file.HlsArtifactTable, file.HlsArtifactColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(fq.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
 // First returns the first File entity from the query.
 // Returns a *NotFoundError when no File was found.
 func (fq *FileQuery) First(ctx context.Context) (*File, error) {
@@ -448,6 +472,7 @@ func (fq *FileQuery) Clone() *FileQuery {
 		withEntities:        fq.withEntities.Clone(),
 		withShares:          fq.withShares.Clone(),
 		withDirectLinks:     fq.withDirectLinks.Clone(),
+		withHlsArtifact:     fq.withHlsArtifact.Clone(),
 		// clone intermediate query.
 		sql:  fq.sql.Clone(),
 		path: fq.path,
@@ -542,6 +567,17 @@ func (fq *FileQuery) WithDirectLinks(opts ...func(*DirectLinkQuery)) *FileQuery 
 	return fq
 }
 
+// WithHlsArtifact tells the query-builder to eager-load the nodes that are connected to
+// the "hls_artifact" edge. The optional arguments are used to configure the query builder of the edge.
+func (fq *FileQuery) WithHlsArtifact(opts ...func(*HLSArtifactQuery)) *FileQuery {
+	query := (&HLSArtifactClient{config: fq.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	fq.withHlsArtifact = query
+	return fq
+}
+
 // GroupBy is used to group vertices by one or more fields/columns.
 // It is often used with aggregate functions, like: count, max, mean, min, sum.
 //
@@ -620,7 +656,7 @@ func (fq *FileQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*File, e
 	var (
 		nodes       = []*File{}
 		_spec       = fq.querySpec()
-		loadedTypes = [8]bool{
+		loadedTypes = [9]bool{
 			fq.withOwner != nil,
 			fq.withStoragePolicies != nil,
 			fq.withParent != nil,
@@ -629,6 +665,7 @@ func (fq *FileQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*File, e
 			fq.withEntities != nil,
 			fq.withShares != nil,
 			fq.withDirectLinks != nil,
+			fq.withHlsArtifact != nil,
 		}
 	)
 	_spec.ScanValues = func(columns []string) ([]any, error) {
@@ -699,6 +736,12 @@ func (fq *FileQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*File, e
 		if err := fq.loadDirectLinks(ctx, query, nodes,
 			func(n *File) { n.Edges.DirectLinks = []*DirectLink{} },
 			func(n *File, e *DirectLink) { n.Edges.DirectLinks = append(n.Edges.DirectLinks, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := fq.withHlsArtifact; query != nil {
+		if err := fq.loadHlsArtifact(ctx, query, nodes, nil,
+			func(n *File, e *HLSArtifact) { n.Edges.HlsArtifact = e }); err != nil {
 			return nil, err
 		}
 	}
@@ -969,6 +1012,33 @@ func (fq *FileQuery) loadDirectLinks(ctx context.Context, query *DirectLinkQuery
 		node, ok := nodeids[fk]
 		if !ok {
 			return fmt.Errorf(`unexpected referenced foreign-key "file_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (fq *FileQuery) loadHlsArtifact(ctx context.Context, query *HLSArtifactQuery, nodes []*File, init func(*File), assign func(*File, *HLSArtifact)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int]*File)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(hlsartifact.FieldSourceFileID)
+	}
+	query.Where(predicate.HLSArtifact(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(file.HlsArtifactColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.SourceFileID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "source_file_id" returned %v for node %v`, fk, n.ID)
 		}
 		assign(node, n)
 	}

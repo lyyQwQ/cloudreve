@@ -26,6 +26,8 @@ type Tx struct {
 	FsEvent *FsEventClient
 	// Group is the client for interacting with the Group builders.
 	Group *GroupClient
+	// HLSArtifact is the client for interacting with the HLSArtifact builders.
+	HLSArtifact *HLSArtifactClient
 	// Metadata is the client for interacting with the Metadata builders.
 	Metadata *MetadataClient
 	// Node is the client for interacting with the Node builders.
@@ -183,6 +185,7 @@ func (tx *Tx) init() {
 	tx.File = NewFileClient(tx.config)
 	tx.FsEvent = NewFsEventClient(tx.config)
 	tx.Group = NewGroupClient(tx.config)
+	tx.HLSArtifact = NewHLSArtifactClient(tx.config)
 	tx.Metadata = NewMetadataClient(tx.config)
 	tx.Node = NewNodeClient(tx.config)
 	tx.OAuthClient = NewOAuthClientClient(tx.config)

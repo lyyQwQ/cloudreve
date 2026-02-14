@@ -14,6 +14,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/directlink"
 	"github.com/cloudreve/Cloudreve/v4/ent/entity"
 	"github.com/cloudreve/Cloudreve/v4/ent/file"
+	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/ent/share"
 	"github.com/cloudreve/Cloudreve/v4/ent/storagepolicy"
@@ -267,6 +268,25 @@ func (fc *FileCreate) AddDirectLinks(d ...*DirectLink) *FileCreate {
 		ids[i] = d[i].ID
 	}
 	return fc.AddDirectLinkIDs(ids...)
+}
+
+// SetHlsArtifactID sets the "hls_artifact" edge to the HLSArtifact entity by ID.
+func (fc *FileCreate) SetHlsArtifactID(id int) *FileCreate {
+	fc.mutation.SetHlsArtifactID(id)
+	return fc
+}
+
+// SetNillableHlsArtifactID sets the "hls_artifact" edge to the HLSArtifact entity by ID if the given value is not nil.
+func (fc *FileCreate) SetNillableHlsArtifactID(id *int) *FileCreate {
+	if id != nil {
+		fc = fc.SetHlsArtifactID(*id)
+	}
+	return fc
+}
+
+// SetHlsArtifact sets the "hls_artifact" edge to the HLSArtifact entity.
+func (fc *FileCreate) SetHlsArtifact(h *HLSArtifact) *FileCreate {
+	return fc.SetHlsArtifactID(h.ID)
 }
 
 // Mutation returns the FileMutation object of the builder.
@@ -547,6 +567,22 @@ func (fc *FileCreate) createSpec() (*File, *sqlgraph.CreateSpec) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(directlink.FieldID, field.TypeInt),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := fc.mutation.HlsArtifactIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   file.HlsArtifactTable,
+			Columns: []string{file.HlsArtifactColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(hlsartifact.FieldID, field.TypeInt),
 			},
 		}
 		for _, k := range nodes {

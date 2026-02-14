@@ -211,6 +211,29 @@ var (
 			},
 		},
 	}
+	// HlsArtifactsColumns holds the columns for the "hls_artifacts" table.
+	HlsArtifactsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt, Increment: true},
+		{Name: "storage_path", Type: field.TypeString},
+		{Name: "segment_count", Type: field.TypeInt, Default: 0},
+		{Name: "total_size", Type: field.TypeInt64, Default: 0},
+		{Name: "codec", Type: field.TypeString, Default: "h264/aac"},
+		{Name: "source_file_id", Type: field.TypeInt, Unique: true},
+	}
+	// HlsArtifactsTable holds the schema information for the "hls_artifacts" table.
+	HlsArtifactsTable = &schema.Table{
+		Name:       "hls_artifacts",
+		Columns:    HlsArtifactsColumns,
+		PrimaryKey: []*schema.Column{HlsArtifactsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "hls_artifacts_files_hls_artifact",
+				Columns:    []*schema.Column{HlsArtifactsColumns[5]},
+				RefColumns: []*schema.Column{FilesColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+	}
 	// MetadataColumns holds the columns for the "metadata" table.
 	MetadataColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt, Increment: true},
@@ -529,6 +552,7 @@ var (
 		FilesTable,
 		FsEventsTable,
 		GroupsTable,
+		HlsArtifactsTable,
 		MetadataTable,
 		NodesTable,
 		OauthClientsTable,
@@ -553,6 +577,7 @@ func init() {
 	FilesTable.ForeignKeys[2].RefTable = UsersTable
 	FsEventsTable.ForeignKeys[0].RefTable = UsersTable
 	GroupsTable.ForeignKeys[0].RefTable = StoragePoliciesTable
+	HlsArtifactsTable.ForeignKeys[0].RefTable = FilesTable
 	MetadataTable.ForeignKeys[0].RefTable = FilesTable
 	OauthGrantsTable.ForeignKeys[0].RefTable = OauthClientsTable
 	OauthGrantsTable.ForeignKeys[1].RefTable = UsersTable

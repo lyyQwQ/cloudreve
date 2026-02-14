@@ -14,6 +14,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/file"
 	"github.com/cloudreve/Cloudreve/v4/ent/fsevent"
 	"github.com/cloudreve/Cloudreve/v4/ent/group"
+	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/ent/node"
 	"github.com/cloudreve/Cloudreve/v4/ent/oauthclient"
@@ -243,6 +244,33 @@ func (f TraverseGroup) Traverse(ctx context.Context, q ent.Query) error {
 		return f(ctx, q)
 	}
 	return fmt.Errorf("unexpected query type %T. expect *ent.GroupQuery", q)
+}
+
+// The HLSArtifactFunc type is an adapter to allow the use of ordinary function as a Querier.
+type HLSArtifactFunc func(context.Context, *ent.HLSArtifactQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f HLSArtifactFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.HLSArtifactQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.HLSArtifactQuery", q)
+}
+
+// The TraverseHLSArtifact type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseHLSArtifact func(context.Context, *ent.HLSArtifactQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseHLSArtifact) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseHLSArtifact) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.HLSArtifactQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.HLSArtifactQuery", q)
 }
 
 // The MetadataFunc type is an adapter to allow the use of ordinary function as a Querier.
@@ -530,6 +558,8 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.FsEventQuery, predicate.FsEvent, fsevent.OrderOption]{typ: ent.TypeFsEvent, tq: q}, nil
 	case *ent.GroupQuery:
 		return &query[*ent.GroupQuery, predicate.Group, group.OrderOption]{typ: ent.TypeGroup, tq: q}, nil
+	case *ent.HLSArtifactQuery:
+		return &query[*ent.HLSArtifactQuery, predicate.HLSArtifact, hlsartifact.OrderOption]{typ: ent.TypeHLSArtifact, tq: q}, nil
 	case *ent.MetadataQuery:
 		return &query[*ent.MetadataQuery, predicate.Metadata, metadata.OrderOption]{typ: ent.TypeMetadata, tq: q}, nil
 	case *ent.NodeQuery:

@@ -17,6 +17,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/file"
 	"github.com/cloudreve/Cloudreve/v4/ent/fsevent"
 	"github.com/cloudreve/Cloudreve/v4/ent/group"
+	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/ent/node"
 	"github.com/cloudreve/Cloudreve/v4/ent/oauthclient"
@@ -49,6 +50,7 @@ const (
 	TypeFile          = "File"
 	TypeFsEvent       = "FsEvent"
 	TypeGroup         = "Group"
+	TypeHLSArtifact   = "HLSArtifact"
 	TypeMetadata      = "Metadata"
 	TypeNode          = "Node"
 	TypeOAuthClient   = "OAuthClient"
@@ -3009,6 +3011,8 @@ type FileMutation struct {
 	direct_links            map[int]struct{}
 	removeddirect_links     map[int]struct{}
 	cleareddirect_links     bool
+	hls_artifact            *int
+	clearedhls_artifact     bool
 	done                    bool
 	oldValue                func(context.Context) (*File, error)
 	predicates              []predicate.File
@@ -3998,6 +4002,45 @@ func (m *FileMutation) ResetDirectLinks() {
 	m.removeddirect_links = nil
 }
 
+// SetHlsArtifactID sets the "hls_artifact" edge to the HLSArtifact entity by id.
+func (m *FileMutation) SetHlsArtifactID(id int) {
+	m.hls_artifact = &id
+}
+
+// ClearHlsArtifact clears the "hls_artifact" edge to the HLSArtifact entity.
+func (m *FileMutation) ClearHlsArtifact() {
+	m.clearedhls_artifact = true
+}
+
+// HlsArtifactCleared reports if the "hls_artifact" edge to the HLSArtifact entity was cleared.
+func (m *FileMutation) HlsArtifactCleared() bool {
+	return m.clearedhls_artifact
+}
+
+// HlsArtifactID returns the "hls_artifact" edge ID in the mutation.
+func (m *FileMutation) HlsArtifactID() (id int, exists bool) {
+	if m.hls_artifact != nil {
+		return *m.hls_artifact, true
+	}
+	return
+}
+
+// HlsArtifactIDs returns the "hls_artifact" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// HlsArtifactID instead. It exists only for internal usage by the builders.
+func (m *FileMutation) HlsArtifactIDs() (ids []int) {
+	if id := m.hls_artifact; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetHlsArtifact resets all changes to the "hls_artifact" edge.
+func (m *FileMutation) ResetHlsArtifact() {
+	m.hls_artifact = nil
+	m.clearedhls_artifact = false
+}
+
 // Where appends a list predicates to the FileMutation builder.
 func (m *FileMutation) Where(ps ...predicate.File) {
 	m.predicates = append(m.predicates, ps...)
@@ -4367,7 +4410,7 @@ func (m *FileMutation) ResetField(name string) error {
 
 // AddedEdges returns all edge names that were set/added in this mutation.
 func (m *FileMutation) AddedEdges() []string {
-	edges := make([]string, 0, 8)
+	edges := make([]string, 0, 9)
 	if m.owner != nil {
 		edges = append(edges, file.EdgeOwner)
 	}
@@ -4391,6 +4434,9 @@ func (m *FileMutation) AddedEdges() []string {
 	}
 	if m.direct_links != nil {
 		edges = append(edges, file.EdgeDirectLinks)
+	}
+	if m.hls_artifact != nil {
+		edges = append(edges, file.EdgeHlsArtifact)
 	}
 	return edges
 }
@@ -4441,13 +4487,17 @@ func (m *FileMutation) AddedIDs(name string) []ent.Value {
 			ids = append(ids, id)
 		}
 		return ids
+	case file.EdgeHlsArtifact:
+		if id := m.hls_artifact; id != nil {
+			return []ent.Value{*id}
+		}
 	}
 	return nil
 }
 
 // RemovedEdges returns all edge names that were removed in this mutation.
 func (m *FileMutation) RemovedEdges() []string {
-	edges := make([]string, 0, 8)
+	edges := make([]string, 0, 9)
 	if m.removedchildren != nil {
 		edges = append(edges, file.EdgeChildren)
 	}
@@ -4506,7 +4556,7 @@ func (m *FileMutation) RemovedIDs(name string) []ent.Value {
 
 // ClearedEdges returns all edge names that were cleared in this mutation.
 func (m *FileMutation) ClearedEdges() []string {
-	edges := make([]string, 0, 8)
+	edges := make([]string, 0, 9)
 	if m.clearedowner {
 		edges = append(edges, file.EdgeOwner)
 	}
@@ -4531,6 +4581,9 @@ func (m *FileMutation) ClearedEdges() []string {
 	if m.cleareddirect_links {
 		edges = append(edges, file.EdgeDirectLinks)
 	}
+	if m.clearedhls_artifact {
+		edges = append(edges, file.EdgeHlsArtifact)
+	}
 	return edges
 }
 
@@ -4554,6 +4607,8 @@ func (m *FileMutation) EdgeCleared(name string) bool {
 		return m.clearedshares
 	case file.EdgeDirectLinks:
 		return m.cleareddirect_links
+	case file.EdgeHlsArtifact:
+		return m.clearedhls_artifact
 	}
 	return false
 }
@@ -4570,6 +4625,9 @@ func (m *FileMutation) ClearEdge(name string) error {
 		return nil
 	case file.EdgeParent:
 		m.ClearParent()
+		return nil
+	case file.EdgeHlsArtifact:
+		m.ClearHlsArtifact()
 		return nil
 	}
 	return fmt.Errorf("unknown File unique edge %s", name)
@@ -4602,6 +4660,9 @@ func (m *FileMutation) ResetEdge(name string) error {
 		return nil
 	case file.EdgeDirectLinks:
 		m.ResetDirectLinks()
+		return nil
+	case file.EdgeHlsArtifact:
+		m.ResetHlsArtifact()
 		return nil
 	}
 	return fmt.Errorf("unknown File edge %s", name)
@@ -6391,6 +6452,671 @@ func (m *GroupMutation) ResetEdge(name string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown Group edge %s", name)
+}
+
+// HLSArtifactMutation represents an operation that mutates the HLSArtifact nodes in the graph.
+type HLSArtifactMutation struct {
+	config
+	op                 Op
+	typ                string
+	id                 *int
+	storage_path       *string
+	segment_count      *int
+	addsegment_count   *int
+	total_size         *int64
+	addtotal_size      *int64
+	codec              *string
+	clearedFields      map[string]struct{}
+	source_file        *int
+	clearedsource_file bool
+	done               bool
+	oldValue           func(context.Context) (*HLSArtifact, error)
+	predicates         []predicate.HLSArtifact
+}
+
+var _ ent.Mutation = (*HLSArtifactMutation)(nil)
+
+// hlsartifactOption allows management of the mutation configuration using functional options.
+type hlsartifactOption func(*HLSArtifactMutation)
+
+// newHLSArtifactMutation creates new mutation for the HLSArtifact entity.
+func newHLSArtifactMutation(c config, op Op, opts ...hlsartifactOption) *HLSArtifactMutation {
+	m := &HLSArtifactMutation{
+		config:        c,
+		op:            op,
+		typ:           TypeHLSArtifact,
+		clearedFields: make(map[string]struct{}),
+	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
+}
+
+// withHLSArtifactID sets the ID field of the mutation.
+func withHLSArtifactID(id int) hlsartifactOption {
+	return func(m *HLSArtifactMutation) {
+		var (
+			err   error
+			once  sync.Once
+			value *HLSArtifact
+		)
+		m.oldValue = func(ctx context.Context) (*HLSArtifact, error) {
+			once.Do(func() {
+				if m.done {
+					err = errors.New("querying old values post mutation is not allowed")
+				} else {
+					value, err = m.Client().HLSArtifact.Get(ctx, id)
+				}
+			})
+			return value, err
+		}
+		m.id = &id
+	}
+}
+
+// withHLSArtifact sets the old HLSArtifact of the mutation.
+func withHLSArtifact(node *HLSArtifact) hlsartifactOption {
+	return func(m *HLSArtifactMutation) {
+		m.oldValue = func(context.Context) (*HLSArtifact, error) {
+			return node, nil
+		}
+		m.id = &node.ID
+	}
+}
+
+// Client returns a new `ent.Client` from the mutation. If the mutation was
+// executed in a transaction (ent.Tx), a transactional client is returned.
+func (m HLSArtifactMutation) Client() *Client {
+	client := &Client{config: m.config}
+	client.init()
+	return client
+}
+
+// Tx returns an `ent.Tx` for mutations that were executed in transactions;
+// it returns an error otherwise.
+func (m HLSArtifactMutation) Tx() (*Tx, error) {
+	if _, ok := m.driver.(*txDriver); !ok {
+		return nil, errors.New("ent: mutation is not running in a transaction")
+	}
+	tx := &Tx{config: m.config}
+	tx.init()
+	return tx, nil
+}
+
+// ID returns the ID value in the mutation. Note that the ID is only available
+// if it was provided to the builder or after it was returned from the database.
+func (m *HLSArtifactMutation) ID() (id int, exists bool) {
+	if m.id == nil {
+		return
+	}
+	return *m.id, true
+}
+
+// IDs queries the database and returns the entity ids that match the mutation's predicate.
+// That means, if the mutation is applied within a transaction with an isolation level such
+// as sql.LevelSerializable, the returned ids match the ids of the rows that will be updated
+// or updated by the mutation.
+func (m *HLSArtifactMutation) IDs(ctx context.Context) ([]int, error) {
+	switch {
+	case m.op.Is(OpUpdateOne | OpDeleteOne):
+		id, exists := m.ID()
+		if exists {
+			return []int{id}, nil
+		}
+		fallthrough
+	case m.op.Is(OpUpdate | OpDelete):
+		return m.Client().HLSArtifact.Query().Where(m.predicates...).IDs(ctx)
+	default:
+		return nil, fmt.Errorf("IDs is not allowed on %s operations", m.op)
+	}
+}
+
+// SetSourceFileID sets the "source_file_id" field.
+func (m *HLSArtifactMutation) SetSourceFileID(i int) {
+	m.source_file = &i
+}
+
+// SourceFileID returns the value of the "source_file_id" field in the mutation.
+func (m *HLSArtifactMutation) SourceFileID() (r int, exists bool) {
+	v := m.source_file
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSourceFileID returns the old "source_file_id" field's value of the HLSArtifact entity.
+// If the HLSArtifact object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *HLSArtifactMutation) OldSourceFileID(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSourceFileID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSourceFileID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSourceFileID: %w", err)
+	}
+	return oldValue.SourceFileID, nil
+}
+
+// ResetSourceFileID resets all changes to the "source_file_id" field.
+func (m *HLSArtifactMutation) ResetSourceFileID() {
+	m.source_file = nil
+}
+
+// SetStoragePath sets the "storage_path" field.
+func (m *HLSArtifactMutation) SetStoragePath(s string) {
+	m.storage_path = &s
+}
+
+// StoragePath returns the value of the "storage_path" field in the mutation.
+func (m *HLSArtifactMutation) StoragePath() (r string, exists bool) {
+	v := m.storage_path
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldStoragePath returns the old "storage_path" field's value of the HLSArtifact entity.
+// If the HLSArtifact object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *HLSArtifactMutation) OldStoragePath(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldStoragePath is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldStoragePath requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldStoragePath: %w", err)
+	}
+	return oldValue.StoragePath, nil
+}
+
+// ResetStoragePath resets all changes to the "storage_path" field.
+func (m *HLSArtifactMutation) ResetStoragePath() {
+	m.storage_path = nil
+}
+
+// SetSegmentCount sets the "segment_count" field.
+func (m *HLSArtifactMutation) SetSegmentCount(i int) {
+	m.segment_count = &i
+	m.addsegment_count = nil
+}
+
+// SegmentCount returns the value of the "segment_count" field in the mutation.
+func (m *HLSArtifactMutation) SegmentCount() (r int, exists bool) {
+	v := m.segment_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSegmentCount returns the old "segment_count" field's value of the HLSArtifact entity.
+// If the HLSArtifact object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *HLSArtifactMutation) OldSegmentCount(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSegmentCount is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSegmentCount requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSegmentCount: %w", err)
+	}
+	return oldValue.SegmentCount, nil
+}
+
+// AddSegmentCount adds i to the "segment_count" field.
+func (m *HLSArtifactMutation) AddSegmentCount(i int) {
+	if m.addsegment_count != nil {
+		*m.addsegment_count += i
+	} else {
+		m.addsegment_count = &i
+	}
+}
+
+// AddedSegmentCount returns the value that was added to the "segment_count" field in this mutation.
+func (m *HLSArtifactMutation) AddedSegmentCount() (r int, exists bool) {
+	v := m.addsegment_count
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetSegmentCount resets all changes to the "segment_count" field.
+func (m *HLSArtifactMutation) ResetSegmentCount() {
+	m.segment_count = nil
+	m.addsegment_count = nil
+}
+
+// SetTotalSize sets the "total_size" field.
+func (m *HLSArtifactMutation) SetTotalSize(i int64) {
+	m.total_size = &i
+	m.addtotal_size = nil
+}
+
+// TotalSize returns the value of the "total_size" field in the mutation.
+func (m *HLSArtifactMutation) TotalSize() (r int64, exists bool) {
+	v := m.total_size
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldTotalSize returns the old "total_size" field's value of the HLSArtifact entity.
+// If the HLSArtifact object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *HLSArtifactMutation) OldTotalSize(ctx context.Context) (v int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldTotalSize is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldTotalSize requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldTotalSize: %w", err)
+	}
+	return oldValue.TotalSize, nil
+}
+
+// AddTotalSize adds i to the "total_size" field.
+func (m *HLSArtifactMutation) AddTotalSize(i int64) {
+	if m.addtotal_size != nil {
+		*m.addtotal_size += i
+	} else {
+		m.addtotal_size = &i
+	}
+}
+
+// AddedTotalSize returns the value that was added to the "total_size" field in this mutation.
+func (m *HLSArtifactMutation) AddedTotalSize() (r int64, exists bool) {
+	v := m.addtotal_size
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetTotalSize resets all changes to the "total_size" field.
+func (m *HLSArtifactMutation) ResetTotalSize() {
+	m.total_size = nil
+	m.addtotal_size = nil
+}
+
+// SetCodec sets the "codec" field.
+func (m *HLSArtifactMutation) SetCodec(s string) {
+	m.codec = &s
+}
+
+// Codec returns the value of the "codec" field in the mutation.
+func (m *HLSArtifactMutation) Codec() (r string, exists bool) {
+	v := m.codec
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldCodec returns the old "codec" field's value of the HLSArtifact entity.
+// If the HLSArtifact object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *HLSArtifactMutation) OldCodec(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldCodec is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldCodec requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldCodec: %w", err)
+	}
+	return oldValue.Codec, nil
+}
+
+// ResetCodec resets all changes to the "codec" field.
+func (m *HLSArtifactMutation) ResetCodec() {
+	m.codec = nil
+}
+
+// ClearSourceFile clears the "source_file" edge to the File entity.
+func (m *HLSArtifactMutation) ClearSourceFile() {
+	m.clearedsource_file = true
+	m.clearedFields[hlsartifact.FieldSourceFileID] = struct{}{}
+}
+
+// SourceFileCleared reports if the "source_file" edge to the File entity was cleared.
+func (m *HLSArtifactMutation) SourceFileCleared() bool {
+	return m.clearedsource_file
+}
+
+// SourceFileIDs returns the "source_file" edge IDs in the mutation.
+// Note that IDs always returns len(IDs) <= 1 for unique edges, and you should use
+// SourceFileID instead. It exists only for internal usage by the builders.
+func (m *HLSArtifactMutation) SourceFileIDs() (ids []int) {
+	if id := m.source_file; id != nil {
+		ids = append(ids, *id)
+	}
+	return
+}
+
+// ResetSourceFile resets all changes to the "source_file" edge.
+func (m *HLSArtifactMutation) ResetSourceFile() {
+	m.source_file = nil
+	m.clearedsource_file = false
+}
+
+// Where appends a list predicates to the HLSArtifactMutation builder.
+func (m *HLSArtifactMutation) Where(ps ...predicate.HLSArtifact) {
+	m.predicates = append(m.predicates, ps...)
+}
+
+// WhereP appends storage-level predicates to the HLSArtifactMutation builder. Using this method,
+// users can use type-assertion to append predicates that do not depend on any generated package.
+func (m *HLSArtifactMutation) WhereP(ps ...func(*sql.Selector)) {
+	p := make([]predicate.HLSArtifact, len(ps))
+	for i := range ps {
+		p[i] = ps[i]
+	}
+	m.Where(p...)
+}
+
+// Op returns the operation name.
+func (m *HLSArtifactMutation) Op() Op {
+	return m.op
+}
+
+// SetOp allows setting the mutation operation.
+func (m *HLSArtifactMutation) SetOp(op Op) {
+	m.op = op
+}
+
+// Type returns the node type of this mutation (HLSArtifact).
+func (m *HLSArtifactMutation) Type() string {
+	return m.typ
+}
+
+// Fields returns all fields that were changed during this mutation. Note that in
+// order to get all numeric fields that were incremented/decremented, call
+// AddedFields().
+func (m *HLSArtifactMutation) Fields() []string {
+	fields := make([]string, 0, 5)
+	if m.source_file != nil {
+		fields = append(fields, hlsartifact.FieldSourceFileID)
+	}
+	if m.storage_path != nil {
+		fields = append(fields, hlsartifact.FieldStoragePath)
+	}
+	if m.segment_count != nil {
+		fields = append(fields, hlsartifact.FieldSegmentCount)
+	}
+	if m.total_size != nil {
+		fields = append(fields, hlsartifact.FieldTotalSize)
+	}
+	if m.codec != nil {
+		fields = append(fields, hlsartifact.FieldCodec)
+	}
+	return fields
+}
+
+// Field returns the value of a field with the given name. The second boolean
+// return value indicates that this field was not set, or was not defined in the
+// schema.
+func (m *HLSArtifactMutation) Field(name string) (ent.Value, bool) {
+	switch name {
+	case hlsartifact.FieldSourceFileID:
+		return m.SourceFileID()
+	case hlsartifact.FieldStoragePath:
+		return m.StoragePath()
+	case hlsartifact.FieldSegmentCount:
+		return m.SegmentCount()
+	case hlsartifact.FieldTotalSize:
+		return m.TotalSize()
+	case hlsartifact.FieldCodec:
+		return m.Codec()
+	}
+	return nil, false
+}
+
+// OldField returns the old value of the field from the database. An error is
+// returned if the mutation operation is not UpdateOne, or the query to the
+// database failed.
+func (m *HLSArtifactMutation) OldField(ctx context.Context, name string) (ent.Value, error) {
+	switch name {
+	case hlsartifact.FieldSourceFileID:
+		return m.OldSourceFileID(ctx)
+	case hlsartifact.FieldStoragePath:
+		return m.OldStoragePath(ctx)
+	case hlsartifact.FieldSegmentCount:
+		return m.OldSegmentCount(ctx)
+	case hlsartifact.FieldTotalSize:
+		return m.OldTotalSize(ctx)
+	case hlsartifact.FieldCodec:
+		return m.OldCodec(ctx)
+	}
+	return nil, fmt.Errorf("unknown HLSArtifact field %s", name)
+}
+
+// SetField sets the value of a field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *HLSArtifactMutation) SetField(name string, value ent.Value) error {
+	switch name {
+	case hlsartifact.FieldSourceFileID:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSourceFileID(v)
+		return nil
+	case hlsartifact.FieldStoragePath:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetStoragePath(v)
+		return nil
+	case hlsartifact.FieldSegmentCount:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSegmentCount(v)
+		return nil
+	case hlsartifact.FieldTotalSize:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetTotalSize(v)
+		return nil
+	case hlsartifact.FieldCodec:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetCodec(v)
+		return nil
+	}
+	return fmt.Errorf("unknown HLSArtifact field %s", name)
+}
+
+// AddedFields returns all numeric fields that were incremented/decremented during
+// this mutation.
+func (m *HLSArtifactMutation) AddedFields() []string {
+	var fields []string
+	if m.addsegment_count != nil {
+		fields = append(fields, hlsartifact.FieldSegmentCount)
+	}
+	if m.addtotal_size != nil {
+		fields = append(fields, hlsartifact.FieldTotalSize)
+	}
+	return fields
+}
+
+// AddedField returns the numeric value that was incremented/decremented on a field
+// with the given name. The second boolean return value indicates that this field
+// was not set, or was not defined in the schema.
+func (m *HLSArtifactMutation) AddedField(name string) (ent.Value, bool) {
+	switch name {
+	case hlsartifact.FieldSegmentCount:
+		return m.AddedSegmentCount()
+	case hlsartifact.FieldTotalSize:
+		return m.AddedTotalSize()
+	}
+	return nil, false
+}
+
+// AddField adds the value to the field with the given name. It returns an error if
+// the field is not defined in the schema, or if the type mismatched the field
+// type.
+func (m *HLSArtifactMutation) AddField(name string, value ent.Value) error {
+	switch name {
+	case hlsartifact.FieldSegmentCount:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddSegmentCount(v)
+		return nil
+	case hlsartifact.FieldTotalSize:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddTotalSize(v)
+		return nil
+	}
+	return fmt.Errorf("unknown HLSArtifact numeric field %s", name)
+}
+
+// ClearedFields returns all nullable fields that were cleared during this
+// mutation.
+func (m *HLSArtifactMutation) ClearedFields() []string {
+	return nil
+}
+
+// FieldCleared returns a boolean indicating if a field with the given name was
+// cleared in this mutation.
+func (m *HLSArtifactMutation) FieldCleared(name string) bool {
+	_, ok := m.clearedFields[name]
+	return ok
+}
+
+// ClearField clears the value of the field with the given name. It returns an
+// error if the field is not defined in the schema.
+func (m *HLSArtifactMutation) ClearField(name string) error {
+	return fmt.Errorf("unknown HLSArtifact nullable field %s", name)
+}
+
+// ResetField resets all changes in the mutation for the field with the given name.
+// It returns an error if the field is not defined in the schema.
+func (m *HLSArtifactMutation) ResetField(name string) error {
+	switch name {
+	case hlsartifact.FieldSourceFileID:
+		m.ResetSourceFileID()
+		return nil
+	case hlsartifact.FieldStoragePath:
+		m.ResetStoragePath()
+		return nil
+	case hlsartifact.FieldSegmentCount:
+		m.ResetSegmentCount()
+		return nil
+	case hlsartifact.FieldTotalSize:
+		m.ResetTotalSize()
+		return nil
+	case hlsartifact.FieldCodec:
+		m.ResetCodec()
+		return nil
+	}
+	return fmt.Errorf("unknown HLSArtifact field %s", name)
+}
+
+// AddedEdges returns all edge names that were set/added in this mutation.
+func (m *HLSArtifactMutation) AddedEdges() []string {
+	edges := make([]string, 0, 1)
+	if m.source_file != nil {
+		edges = append(edges, hlsartifact.EdgeSourceFile)
+	}
+	return edges
+}
+
+// AddedIDs returns all IDs (to other nodes) that were added for the given edge
+// name in this mutation.
+func (m *HLSArtifactMutation) AddedIDs(name string) []ent.Value {
+	switch name {
+	case hlsartifact.EdgeSourceFile:
+		if id := m.source_file; id != nil {
+			return []ent.Value{*id}
+		}
+	}
+	return nil
+}
+
+// RemovedEdges returns all edge names that were removed in this mutation.
+func (m *HLSArtifactMutation) RemovedEdges() []string {
+	edges := make([]string, 0, 1)
+	return edges
+}
+
+// RemovedIDs returns all IDs (to other nodes) that were removed for the edge with
+// the given name in this mutation.
+func (m *HLSArtifactMutation) RemovedIDs(name string) []ent.Value {
+	return nil
+}
+
+// ClearedEdges returns all edge names that were cleared in this mutation.
+func (m *HLSArtifactMutation) ClearedEdges() []string {
+	edges := make([]string, 0, 1)
+	if m.clearedsource_file {
+		edges = append(edges, hlsartifact.EdgeSourceFile)
+	}
+	return edges
+}
+
+// EdgeCleared returns a boolean which indicates if the edge with the given name
+// was cleared in this mutation.
+func (m *HLSArtifactMutation) EdgeCleared(name string) bool {
+	switch name {
+	case hlsartifact.EdgeSourceFile:
+		return m.clearedsource_file
+	}
+	return false
+}
+
+// ClearEdge clears the value of the edge with the given name. It returns an error
+// if that edge is not defined in the schema.
+func (m *HLSArtifactMutation) ClearEdge(name string) error {
+	switch name {
+	case hlsartifact.EdgeSourceFile:
+		m.ClearSourceFile()
+		return nil
+	}
+	return fmt.Errorf("unknown HLSArtifact unique edge %s", name)
+}
+
+// ResetEdge resets all changes to the edge with the given name in this mutation.
+// It returns an error if the edge is not defined in the schema.
+func (m *HLSArtifactMutation) ResetEdge(name string) error {
+	switch name {
+	case hlsartifact.EdgeSourceFile:
+		m.ResetSourceFile()
+		return nil
+	}
+	return fmt.Errorf("unknown HLSArtifact edge %s", name)
 }
 
 // MetadataMutation represents an operation that mutates the Metadata nodes in the graph.

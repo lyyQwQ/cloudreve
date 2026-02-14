@@ -81,6 +81,18 @@ func (f GroupFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.GroupMutation", m)
 }
 
+// The HLSArtifactFunc type is an adapter to allow the use of ordinary
+// function as HLSArtifact mutator.
+type HLSArtifactFunc func(context.Context, *ent.HLSArtifactMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f HLSArtifactFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.HLSArtifactMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.HLSArtifactMutation", m)
+}
+
 // The MetadataFunc type is an adapter to allow the use of ordinary
 // function as Metadata mutator.
 type MetadataFunc func(context.Context, *ent.MetadataMutation) (ent.Value, error)

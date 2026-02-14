@@ -69,6 +69,8 @@ func (File) Edges() []ent.Edge {
 		edge.To("entities", Entity.Type),
 		edge.To("shares", Share.Type),
 		edge.To("direct_links", DirectLink.Type),
+		edge.To("hls_artifact", HLSArtifact.Type).
+			Unique(),
 	}
 }
 

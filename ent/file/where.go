@@ -664,6 +664,29 @@ func HasDirectLinksWith(preds ...predicate.DirectLink) predicate.File {
 	})
 }
 
+// HasHlsArtifact applies the HasEdge predicate on the "hls_artifact" edge.
+func HasHlsArtifact() predicate.File {
+	return predicate.File(func(s *sql.Selector) {
+		step := sqlgraph.NewStep(
+			sqlgraph.From(Table, FieldID),
+			sqlgraph.Edge(sqlgraph.O2O, false, HlsArtifactTable, HlsArtifactColumn),
+		)
+		sqlgraph.HasNeighbors(s, step)
+	})
+}
+
+// HasHlsArtifactWith applies the HasEdge predicate on the "hls_artifact" edge with a given conditions (other predicates).
+func HasHlsArtifactWith(preds ...predicate.HLSArtifact) predicate.File {
+	return predicate.File(func(s *sql.Selector) {
+		step := newHlsArtifactStep()
+		sqlgraph.HasNeighborsWith(s, step, func(s *sql.Selector) {
+			for _, p := range preds {
+				p(s)
+			}
+		})
+	})
+}
+
 // And groups predicates with the AND operator between them.
 func And(predicates ...predicate.File) predicate.File {
 	return predicate.File(sql.AndPredicates(predicates...))

@@ -14,6 +14,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/directlink"
 	"github.com/cloudreve/Cloudreve/v4/ent/entity"
 	"github.com/cloudreve/Cloudreve/v4/ent/file"
+	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/ent/predicate"
 	"github.com/cloudreve/Cloudreve/v4/ent/share"
@@ -330,6 +331,25 @@ func (fu *FileUpdate) AddDirectLinks(d ...*DirectLink) *FileUpdate {
 	return fu.AddDirectLinkIDs(ids...)
 }
 
+// SetHlsArtifactID sets the "hls_artifact" edge to the HLSArtifact entity by ID.
+func (fu *FileUpdate) SetHlsArtifactID(id int) *FileUpdate {
+	fu.mutation.SetHlsArtifactID(id)
+	return fu
+}
+
+// SetNillableHlsArtifactID sets the "hls_artifact" edge to the HLSArtifact entity by ID if the given value is not nil.
+func (fu *FileUpdate) SetNillableHlsArtifactID(id *int) *FileUpdate {
+	if id != nil {
+		fu = fu.SetHlsArtifactID(*id)
+	}
+	return fu
+}
+
+// SetHlsArtifact sets the "hls_artifact" edge to the HLSArtifact entity.
+func (fu *FileUpdate) SetHlsArtifact(h *HLSArtifact) *FileUpdate {
+	return fu.SetHlsArtifactID(h.ID)
+}
+
 // Mutation returns the FileMutation object of the builder.
 func (fu *FileUpdate) Mutation() *FileMutation {
 	return fu.mutation
@@ -456,6 +476,12 @@ func (fu *FileUpdate) RemoveDirectLinks(d ...*DirectLink) *FileUpdate {
 		ids[i] = d[i].ID
 	}
 	return fu.RemoveDirectLinkIDs(ids...)
+}
+
+// ClearHlsArtifact clears the "hls_artifact" edge to the HLSArtifact entity.
+func (fu *FileUpdate) ClearHlsArtifact() *FileUpdate {
+	fu.mutation.ClearHlsArtifact()
+	return fu
 }
 
 // Save executes the query and returns the number of nodes affected by the update operation.
@@ -853,6 +879,35 @@ func (fu *FileUpdate) sqlSave(ctx context.Context) (n int, err error) {
 		}
 		_spec.Edges.Add = append(_spec.Edges.Add, edge)
 	}
+	if fu.mutation.HlsArtifactCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   file.HlsArtifactTable,
+			Columns: []string{file.HlsArtifactColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(hlsartifact.FieldID, field.TypeInt),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := fu.mutation.HlsArtifactIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   file.HlsArtifactTable,
+			Columns: []string{file.HlsArtifactColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(hlsartifact.FieldID, field.TypeInt),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
 	if n, err = sqlgraph.UpdateNodes(ctx, fu.driver, _spec); err != nil {
 		if _, ok := err.(*sqlgraph.NotFoundError); ok {
 			err = &NotFoundError{file.Label}
@@ -1168,6 +1223,25 @@ func (fuo *FileUpdateOne) AddDirectLinks(d ...*DirectLink) *FileUpdateOne {
 	return fuo.AddDirectLinkIDs(ids...)
 }
 
+// SetHlsArtifactID sets the "hls_artifact" edge to the HLSArtifact entity by ID.
+func (fuo *FileUpdateOne) SetHlsArtifactID(id int) *FileUpdateOne {
+	fuo.mutation.SetHlsArtifactID(id)
+	return fuo
+}
+
+// SetNillableHlsArtifactID sets the "hls_artifact" edge to the HLSArtifact entity by ID if the given value is not nil.
+func (fuo *FileUpdateOne) SetNillableHlsArtifactID(id *int) *FileUpdateOne {
+	if id != nil {
+		fuo = fuo.SetHlsArtifactID(*id)
+	}
+	return fuo
+}
+
+// SetHlsArtifact sets the "hls_artifact" edge to the HLSArtifact entity.
+func (fuo *FileUpdateOne) SetHlsArtifact(h *HLSArtifact) *FileUpdateOne {
+	return fuo.SetHlsArtifactID(h.ID)
+}
+
 // Mutation returns the FileMutation object of the builder.
 func (fuo *FileUpdateOne) Mutation() *FileMutation {
 	return fuo.mutation
@@ -1294,6 +1368,12 @@ func (fuo *FileUpdateOne) RemoveDirectLinks(d ...*DirectLink) *FileUpdateOne {
 		ids[i] = d[i].ID
 	}
 	return fuo.RemoveDirectLinkIDs(ids...)
+}
+
+// ClearHlsArtifact clears the "hls_artifact" edge to the HLSArtifact entity.
+func (fuo *FileUpdateOne) ClearHlsArtifact() *FileUpdateOne {
+	fuo.mutation.ClearHlsArtifact()
+	return fuo
 }
 
 // Where appends a list predicates to the FileUpdate builder.
@@ -1714,6 +1794,35 @@ func (fuo *FileUpdateOne) sqlSave(ctx context.Context) (_node *File, err error) 
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(directlink.FieldID, field.TypeInt),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if fuo.mutation.HlsArtifactCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   file.HlsArtifactTable,
+			Columns: []string{file.HlsArtifactColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(hlsartifact.FieldID, field.TypeInt),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := fuo.mutation.HlsArtifactIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2O,
+			Inverse: false,
+			Table:   file.HlsArtifactTable,
+			Columns: []string{file.HlsArtifactColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(hlsartifact.FieldID, field.TypeInt),
 			},
 		}
 		for _, k := range nodes {

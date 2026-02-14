@@ -11,6 +11,7 @@ import (
 	"entgo.io/ent"
 	"entgo.io/ent/dialect/sql"
 	"github.com/cloudreve/Cloudreve/v4/ent/file"
+	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/ent/storagepolicy"
 	"github.com/cloudreve/Cloudreve/v4/ent/user"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
@@ -67,9 +68,11 @@ type FileEdges struct {
 	Shares []*Share `json:"shares,omitempty"`
 	// DirectLinks holds the value of the direct_links edge.
 	DirectLinks []*DirectLink `json:"direct_links,omitempty"`
+	// HlsArtifact holds the value of the hls_artifact edge.
+	HlsArtifact *HLSArtifact `json:"hls_artifact,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [8]bool
+	loadedTypes [9]bool
 }
 
 // OwnerOrErr returns the Owner value or an error if the edge
@@ -154,6 +157,19 @@ func (e FileEdges) DirectLinksOrErr() ([]*DirectLink, error) {
 		return e.DirectLinks, nil
 	}
 	return nil, &NotLoadedError{edge: "direct_links"}
+}
+
+// HlsArtifactOrErr returns the HlsArtifact value or an error if the edge
+// was not loaded in eager-loading, or loaded but was not found.
+func (e FileEdges) HlsArtifactOrErr() (*HLSArtifact, error) {
+	if e.loadedTypes[8] {
+		if e.HlsArtifact == nil {
+			// Edge was loaded but was not found.
+			return nil, &NotFoundError{label: hlsartifact.Label}
+		}
+		return e.HlsArtifact, nil
+	}
+	return nil, &NotLoadedError{edge: "hls_artifact"}
 }
 
 // scanValues returns the types for scanning values from sql.Rows.
@@ -313,6 +329,11 @@ func (f *File) QueryDirectLinks() *DirectLinkQuery {
 	return NewFileClient(f.config).QueryDirectLinks(f)
 }
 
+// QueryHlsArtifact queries the "hls_artifact" edge of the File entity.
+func (f *File) QueryHlsArtifact() *HLSArtifactQuery {
+	return NewFileClient(f.config).QueryHlsArtifact(f)
+}
+
 // Update returns a builder for updating this File.
 // Note that you need to call File.Unwrap() before calling this method if this File
 // was returned from a transaction, and the transaction was committed or rolled back.
@@ -418,6 +439,12 @@ func (e *File) SetShares(v []*Share) {
 func (e *File) SetDirectLinks(v []*DirectLink) {
 	e.Edges.DirectLinks = v
 	e.Edges.loadedTypes[7] = true
+}
+
+// SetHlsArtifact manually set the edge as loaded state.
+func (e *File) SetHlsArtifact(v *HLSArtifact) {
+	e.Edges.HlsArtifact = v
+	e.Edges.loadedTypes[8] = true
 }
 
 // Files is a parsable slice of File.

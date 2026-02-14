@@ -53,6 +53,8 @@ const (
 	EdgeShares = "shares"
 	// EdgeDirectLinks holds the string denoting the direct_links edge name in mutations.
 	EdgeDirectLinks = "direct_links"
+	// EdgeHlsArtifact holds the string denoting the hls_artifact edge name in mutations.
+	EdgeHlsArtifact = "hls_artifact"
 	// Table holds the table name of the file in the database.
 	Table = "files"
 	// OwnerTable is the table that holds the owner relation/edge.
@@ -103,6 +105,13 @@ const (
 	DirectLinksInverseTable = "direct_links"
 	// DirectLinksColumn is the table column denoting the direct_links relation/edge.
 	DirectLinksColumn = "file_id"
+	// HlsArtifactTable is the table that holds the hls_artifact relation/edge.
+	HlsArtifactTable = "hls_artifacts"
+	// HlsArtifactInverseTable is the table name for the HLSArtifact entity.
+	// It exists in this package in order to avoid circular dependency with the "hlsartifact" package.
+	HlsArtifactInverseTable = "hls_artifacts"
+	// HlsArtifactColumn is the table column denoting the hls_artifact relation/edge.
+	HlsArtifactColumn = "source_file_id"
 )
 
 // Columns holds all SQL columns for file fields.
@@ -302,6 +311,13 @@ func ByDirectLinks(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 		sqlgraph.OrderByNeighborTerms(s, newDirectLinksStep(), append([]sql.OrderTerm{term}, terms...)...)
 	}
 }
+
+// ByHlsArtifactField orders the results by hls_artifact field.
+func ByHlsArtifactField(field string, opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newHlsArtifactStep(), sql.OrderByField(field, opts...))
+	}
+}
 func newOwnerStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(
 		sqlgraph.From(Table, FieldID),
@@ -356,5 +372,12 @@ func newDirectLinksStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(DirectLinksInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, DirectLinksTable, DirectLinksColumn),
+	)
+}
+func newHlsArtifactStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(HlsArtifactInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2O, false, HlsArtifactTable, HlsArtifactColumn),
 	)
 }
