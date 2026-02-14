@@ -18,11 +18,13 @@ import (
 	adminsvc "github.com/cloudreve/Cloudreve/v4/service/admin"
 	"github.com/cloudreve/Cloudreve/v4/service/basic"
 	"github.com/cloudreve/Cloudreve/v4/service/explorer"
+	hlssvc "github.com/cloudreve/Cloudreve/v4/service/hls"
 	"github.com/cloudreve/Cloudreve/v4/service/node"
 	"github.com/cloudreve/Cloudreve/v4/service/oauth"
 	"github.com/cloudreve/Cloudreve/v4/service/setting"
 	sharesvc "github.com/cloudreve/Cloudreve/v4/service/share"
 	usersvc "github.com/cloudreve/Cloudreve/v4/service/user"
+	videosvc "github.com/cloudreve/Cloudreve/v4/service/video"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
@@ -265,6 +267,12 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				controllers.FromUri[sharesvc.ShortLinkRedirectService](sharesvc.ShortLinkRedirectParamCtx{}),
 				controllers.ShareRedirect,
 			)
+		}
+
+		folderDirect := r.Group("d")
+		{
+			folderDirect.GET(":token", controllers.FolderDL)
+			folderDirect.GET(":token/*path", controllers.FolderDL)
 		}
 
 		// 全局设置相关
@@ -595,6 +603,22 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 					controllers.CancelDownloadTask,
 				)
 			}
+		}
+
+		video := v4.Group("video")
+		{
+			video.POST("info", videosvc.GetInfo)
+			video.GET("subtitles", videosvc.ListSubtitles)
+			video.POST("subtitle/burn", videosvc.BurnSubtitle)
+			video.POST("hls", videosvc.SliceHLS)
+		}
+
+		hls := v4.Group("hls")
+		{
+			hls.GET(":fileId", hlssvc.GetStatus)
+			hls.DELETE(":fileId", hlssvc.Delete)
+			hls.GET(":fileId/play/index.m3u8", hlssvc.PlayIndex)
+			hls.GET(":fileId/play/:segment", hlssvc.PlaySegment)
 		}
 
 		// 文件
