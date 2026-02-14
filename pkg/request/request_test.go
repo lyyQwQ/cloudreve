@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
-	"github.com/cloudreve/Cloudreve/v4/pkg/cache"
+	"github.com/cloudreve/Cloudreve/v4/pkg/conf"
 	"github.com/stretchr/testify/assert"
 	testMock "github.com/stretchr/testify/mock"
 	"io"
@@ -17,6 +17,19 @@ import (
 
 type ClientMock struct {
 	testMock.Mock
+}
+
+type testConfigProvider struct{}
+
+func (testConfigProvider) Database() *conf.Database { return &conf.Database{} }
+func (testConfigProvider) System() *conf.System     { return &conf.System{} }
+func (testConfigProvider) SSL() *conf.SSL           { return &conf.SSL{} }
+func (testConfigProvider) Unix() *conf.Unix         { return &conf.Unix{} }
+func (testConfigProvider) Slave() *conf.Slave       { return &conf.Slave{} }
+func (testConfigProvider) Redis() *conf.Redis       { return &conf.Redis{} }
+func (testConfigProvider) Cors() *conf.Cors         { return &conf.Cors{} }
+func (testConfigProvider) OptionOverwrite() map[string]any {
+	return map[string]any{}
 }
 
 func (m ClientMock) Request(method, target string, body io.Reader, opts ...Option) *Response {
@@ -54,7 +67,7 @@ func TestWithContext(t *testing.T) {
 
 func TestHTTPClient_Request(t *testing.T) {
 	asserts := assert.New(t)
-	client := NewClientDeprecated(WithSlaveMeta("test"))
+	client := NewClient(testConfigProvider{}, WithSlaveMeta(1))
 
 	// 正常
 	{
@@ -230,7 +243,6 @@ func TestNopRSCloser_SetFirstFakeChunk(t *testing.T) {
 
 func TestBlackHole(t *testing.T) {
 	a := assert.New(t)
-	cache.Set("setting_reset_after_upload_failed", "true", 0)
 	a.NotPanics(func() {
 		BlackHole(strings.NewReader("TestBlackHole"))
 	})
@@ -238,7 +250,7 @@ func TestBlackHole(t *testing.T) {
 
 func TestHTTPClient_TPSLimit(t *testing.T) {
 	a := assert.New(t)
-	client := NewClientDeprecated()
+	client := NewClient(testConfigProvider{})
 
 	finished := make(chan struct{})
 	go func() {

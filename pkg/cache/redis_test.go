@@ -3,6 +3,8 @@ package cache
 import (
 	"errors"
 	"fmt"
+	"github.com/cloudreve/Cloudreve/v4/pkg/conf"
+	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 	"github.com/gomodule/redigo/redis"
 	"github.com/rafaeljusto/redigomock"
 	"github.com/stretchr/testify/assert"
@@ -13,7 +15,11 @@ import (
 func TestNewRedisStore(t *testing.T) {
 	asserts := assert.New(t)
 
-	store := NewRedisStore(10, "tcp", "", "", "0")
+	store := NewRedisStore(
+		logging.NewConsoleLogger(logging.LevelError),
+		10,
+		&conf.Redis{Network: "tcp", Server: "", User: "", Password: "", DB: "invalid", UseTLS: false, TLSSkipVerify: false},
+	)
 	asserts.NotNil(store)
 
 	conn, err := store.pool.Dial()
@@ -291,7 +297,7 @@ func TestRedisStore_Delete(t *testing.T) {
 	// 正常
 	{
 		cmd := conn.Command("DEL", redigomock.NewAnyData(), redigomock.NewAnyData(), redigomock.NewAnyData(), redigomock.NewAnyData()).ExpectSlice("OK")
-		err := store.Delete([]string{"1", "2", "3", "4"}, "test_")
+		err := store.Delete("test_", "1", "2", "3", "4")
 		asserts.NoError(err)
 		if conn.Stats(cmd) != 1 {
 			fmt.Println("Command was not used")
@@ -303,7 +309,7 @@ func TestRedisStore_Delete(t *testing.T) {
 	{
 		conn.Clear()
 		cmd := conn.Command("DEL", redigomock.NewAnyData(), redigomock.NewAnyData(), redigomock.NewAnyData(), redigomock.NewAnyData()).ExpectError(errors.New("error"))
-		err := store.Delete([]string{"1", "2", "3", "4"}, "test_")
+		err := store.Delete("test_", "1", "2", "3", "4")
 		asserts.Error(err)
 		if conn.Stats(cmd) != 1 {
 			fmt.Println("Command was not used")
@@ -318,7 +324,7 @@ func TestRedisStore_Delete(t *testing.T) {
 			Dial:    func() (redis.Conn, error) { return nil, errors.New("error") },
 			MaxIdle: 10,
 		}
-		err := store.Delete([]string{"1", "2", "3", "4"}, "test_")
+		err := store.Delete("test_", "1", "2", "3", "4")
 		asserts.Error(err)
 	}
 }

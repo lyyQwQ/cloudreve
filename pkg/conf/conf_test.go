@@ -1,29 +1,36 @@
 package conf
 
 import (
+	"path/filepath"
+
+	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 	"github.com/cloudreve/Cloudreve/v4/pkg/util"
+	"github.com/go-ini/ini"
 	"github.com/stretchr/testify/assert"
-	"io/ioutil"
 	"os"
 	"testing"
 )
 
-// 测试Init日志路径错误
-func TestInitPanic(t *testing.T) {
+func TestNewIniConfigProviderCreatesDefaultWhenMissing(t *testing.T) {
 	asserts := assert.New(t)
+	logger := logging.NewConsoleLogger(logging.LevelError)
 
-	// 日志路径不存在时
-	asserts.NotPanics(func() {
-		Init("not/exist/path")
-	})
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "conf.ini")
 
-	asserts.True(util.Exists("conf.ini"))
-
+	provider, err := NewIniConfigProvider(configPath, logger)
+	asserts.NoError(err)
+	asserts.NotNil(provider)
+	asserts.True(util.Exists(configPath))
 }
 
-// TestInitDelimiterNotFound 日志路径存在但 Key 格式错误时
-func TestInitDelimiterNotFound(t *testing.T) {
+func TestNewIniConfigProviderInvalidIniReturnsError(t *testing.T) {
 	asserts := assert.New(t)
+	logger := logging.NewConsoleLogger(logging.LevelError)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "conf.ini")
+
 	testCase := `[Database]
 Type = mysql
 User = root
@@ -31,22 +38,27 @@ Password233root
 Host = 127.0.0.1:3306
 Name = v3
 TablePrefix = v3_`
-	err := ioutil.WriteFile("testConf.ini", []byte(testCase), 0644)
-	defer func() { err = os.Remove("testConf.ini") }()
+	err := os.WriteFile(configPath, []byte(testCase), 0644)
 	if err != nil {
 		panic(err)
 	}
-	asserts.Panics(func() {
-		Init("testConf.ini")
-	})
+
+	provider, err := NewIniConfigProvider(configPath, logger)
+	asserts.Error(err)
+	asserts.Nil(provider)
 }
 
-// TestInitNoPanic 日志路径存在且合法时
-func TestInitNoPanic(t *testing.T) {
+func TestNewIniConfigProviderValidIniNoError(t *testing.T) {
 	asserts := assert.New(t)
+	logger := logging.NewConsoleLogger(logging.LevelError)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "conf.ini")
+
 	testCase := `
 [System]
 Listen = 3000
+Mode = master
 HashIDSalt = 1
 
 [Database]
@@ -56,23 +68,28 @@ Password = root
 Host = 127.0.0.1:3306
 Name = v3
 TablePrefix = v3_`
-	err := ioutil.WriteFile("testConf.ini", []byte(testCase), 0644)
-	defer func() { err = os.Remove("testConf.ini") }()
+	err := os.WriteFile(configPath, []byte(testCase), 0644)
 	if err != nil {
 		panic(err)
 	}
-	asserts.NotPanics(func() {
-		Init("testConf.ini")
-	})
+
+	provider, err := NewIniConfigProvider(configPath, logger)
+	asserts.NoError(err)
+	asserts.NotNil(provider)
+	asserts.Equal("3000", provider.System().Listen)
 }
 
 func TestMapSection(t *testing.T) {
 	asserts := assert.New(t)
+	logger := logging.NewConsoleLogger(logging.LevelError)
 
-	//正常情况
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "conf.ini")
+
 	testCase := `
 [System]
 Listen = 3000
+Mode = master
 HashIDSalt = 1
 
 [Database]
@@ -82,13 +99,28 @@ Password:root
 Host = 127.0.0.1:3306
 Name = v3
 TablePrefix = v3_`
-	err := ioutil.WriteFile("testConf.ini", []byte(testCase), 0644)
-	defer func() { err = os.Remove("testConf.ini") }()
+	err := os.WriteFile(configPath, []byte(testCase), 0644)
 	if err != nil {
 		panic(err)
 	}
-	Init("testConf.ini")
-	err = mapSection("Database", DatabaseConfig)
+
+	provider, err := NewIniConfigProvider(configPath, logger)
 	asserts.NoError(err)
+	asserts.NotNil(provider)
+
+	cfg, err := ini.Load(configPath)
+	asserts.NoError(err)
+
+	var db Database
+	err = mapSection(cfg, "Database", &db)
+	asserts.NoError(err)
+	asserts.Equal(MySqlDB, db.Type)
+	asserts.Equal("root", db.Password)
+
+	sys := *SystemConfig
+	err = mapSection(cfg, "System", &sys)
+	asserts.NoError(err)
+	asserts.Equal("3000", sys.Listen)
+	asserts.Equal(MasterMode, sys.Mode)
 
 }
