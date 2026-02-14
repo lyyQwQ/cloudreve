@@ -5,6 +5,7 @@ import (
 	"errors"
 	iofs "io/fs"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -118,6 +119,7 @@ type Dep interface {
 	ThumbPipeline() thumb.Generator
 	// ThumbQueue Get a singleton queue.Queue instance for thumbnail generation.
 	ThumbQueue(ctx context.Context) queue.Queue
+	VideoProcessQueue(ctx context.Context) queue.Queue
 	// EntityRecycleQueue Get a singleton queue.Queue instance for entity recycle.
 	EntityRecycleQueue(ctx context.Context) queue.Queue
 	// MimeDetector Get a singleton fs.MimeDetector instance for MIME type detection.
@@ -178,6 +180,7 @@ type dependency struct {
 	requestClient         request.Client
 	ioIntenseQueue        queue.Queue
 	thumbQueue            queue.Queue
+	videoProcessQueue     queue.Queue
 	mediaMetaQueue        queue.Queue
 	entityRecycleQueue    queue.Queue
 	slaveQueue            queue.Queue
@@ -653,6 +656,41 @@ func (d *dependency) MediaMetaQueue(ctx context.Context) queue.Queue {
 		),
 	)
 	return d.mediaMetaQueue
+}
+
+func (d *dependency) VideoProcessQueue(ctx context.Context) queue.Queue {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, reload := ctx.Value(ReloadCtx{}).(bool)
+	if d.videoProcessQueue != nil && !reload {
+		return d.videoProcessQueue
+	}
+
+	if d.videoProcessQueue != nil {
+		d.videoProcessQueue.Shutdown()
+	}
+
+	workerNum := 2
+	if d.ConfigProvider().System().Mode == conf.MasterMode {
+		if v, err := d.SettingClient().Get(ctx, "queue_video_process_worker_num"); err == nil {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				workerNum = n
+			}
+		}
+	}
+
+	var t inventory.TaskClient
+	if d.ConfigProvider().System().Mode == conf.MasterMode {
+		t = d.TaskClient()
+	}
+
+	d.videoProcessQueue = queue.New(d.Logger(), t, nil, d,
+		queue.WithWorkerCount(workerNum),
+		queue.WithName("VideoProcessQueue"),
+		queue.WithResumeTaskType(queue.VideoSubtitleBurnTaskType, queue.VideoHLSSliceTaskType),
+	)
+	return d.videoProcessQueue
 }
 
 func (d *dependency) IoIntenseQueue(ctx context.Context) queue.Queue {

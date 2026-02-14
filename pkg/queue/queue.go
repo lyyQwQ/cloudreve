@@ -59,6 +59,7 @@ type (
 	Dep interface {
 		ForkWithLogger(ctx context.Context, l logging.Logger) context.Context
 	}
+	depCtxKey struct{}
 )
 
 var (
@@ -215,7 +216,13 @@ func (q *queue) newContext(t Task) context.Context {
 	ctx = context.WithValue(ctx, logging.CorrelationIDCtx{}, t.CorrelationID())
 	ctx = context.WithValue(ctx, logging.LoggerCtx{}, l)
 	ctx = context.WithValue(ctx, inventory.UserCtx{}, t.Owner())
+	ctx = context.WithValue(ctx, depCtxKey{}, q.dep)
 	return ctx
+}
+
+func depFromContext(ctx context.Context) Dep {
+	dep, _ := ctx.Value(depCtxKey{}).(Dep)
+	return dep
 }
 
 func (q *queue) work(t Task) {
