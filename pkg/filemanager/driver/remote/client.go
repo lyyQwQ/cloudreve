@@ -177,7 +177,7 @@ func (c *remoteClient) DeleteFiles(ctx context.Context, files ...string) ([]stri
 		if resp.Code == serializer.CodeNotFullySuccess {
 			resp.GobDecode(&failed)
 		}
-		return failed, fmt.Errorf(resp.Error)
+		return failed, fmt.Errorf("%s", resp.Error)
 	}
 
 	return nil, nil
@@ -196,7 +196,7 @@ func (c *remoteClient) MediaMeta(ctx context.Context, src, ext, language string)
 	}
 
 	if resp.Code != 0 {
-		return nil, fmt.Errorf(resp.Error)
+		return nil, fmt.Errorf("%s", resp.Error)
 	}
 
 	var metas []driver.MediaMeta
