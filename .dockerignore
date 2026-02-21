@@ -1,0 +1,12 @@
+.git
+.github
+data/
+node_modules/
+*.zip
+.sisyphus/
+tmp/
+*.md
+.vscode/
+.idea/
+azure-pipelines.yml
+.goreleaser.yaml

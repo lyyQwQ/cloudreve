@@ -1,6 +1,6 @@
 services:
   cloudreve:
-    image: cloudreve/cloudreve:latest
+    image: ghcr.io/lyyqwq/cloudreve:latest # rollback: pin to sha-<gitsha> tag
     container_name: cloudreve-backend
     depends_on:
       - postgresql
