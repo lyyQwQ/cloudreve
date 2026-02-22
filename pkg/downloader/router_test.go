@@ -2,6 +2,8 @@ package downloader
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -33,6 +35,27 @@ func (s *spyDownloader) Test(ctx context.Context) (string, error) {
 
 func TestRouter_CreateTaskRouting(t *testing.T) {
 	ctx := context.Background()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/pt-download":
+			if r.Method != http.MethodHead {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Content-Type", torrentContentType)
+			w.WriteHeader(http.StatusOK)
+		case "/redirect":
+			http.Redirect(w, r, "/pt-download", http.StatusFound)
+		case "/not-torrent":
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+		case "/head-fails":
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
 
 	type tc struct {
 		name       string
@@ -44,8 +67,10 @@ func TestRouter_CreateTaskRouting(t *testing.T) {
 	tests := []tc{
 		{name: "magnet routes to qbittorrent", url: "magnet:?xt=urn:btih:abcdef", expectQB: true},
 		{name: "torrent routes to qbittorrent (case-insensitive)", url: "https://example.com/a.TORRENT?x=1", expectQB: true},
-		{name: "http routes to aria2", url: "http://example.com/a.iso", expectQB: false, expectA2ID: true},
-		{name: "https routes to aria2", url: "https://example.com/a.iso", expectQB: false, expectA2ID: true},
+		{name: "http torrent by content-type routes to qbittorrent", url: server.URL + "/pt-download?id=123", expectQB: true},
+		{name: "http redirect keeps probe and routes to qbittorrent", url: server.URL + "/redirect?id=123", expectQB: true},
+		{name: "http non-torrent content-type routes to aria2", url: server.URL + "/not-torrent", expectQB: false, expectA2ID: true},
+		{name: "head failure falls back to suffix logic", url: server.URL + "/head-fails?id=123", expectQB: false, expectA2ID: true},
 		{name: "ftp routes to aria2", url: "ftp://example.com/a.iso", expectQB: false, expectA2ID: true},
 		{name: "empty routes to aria2", url: "", expectQB: false, expectA2ID: true},
 	}
