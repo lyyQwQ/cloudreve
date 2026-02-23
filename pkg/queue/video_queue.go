@@ -44,6 +44,10 @@ const (
 	videoFFMpegNiceSettingName    = "video_ffmpeg_nice"
 	videoFFMpegThreadsDefault     = 1
 	videoFFMpegNiceDefault        = 10
+
+	subtitleStyle1080p        = "FontSize=22,MarginV=28,Outline=0.3,Shadow=1"
+	subtitleStyle720p         = "FontSize=18,MarginV=20,Outline=0.3,Shadow=1"
+	subtitleStyleHeightCutoff = 900
 )
 
 type VideoSubtitleOption struct {
@@ -169,7 +173,13 @@ func (t *VideoSubtitleBurnTask) Do(ctx context.Context) (task.Status, error) {
 		return task.StatusError, wrapVideoTaskErr(err)
 	}
 
-	filterArg, modeUsed, err := buildSubtitleFilterArg(input, state.Subtitle)
+	height, probeStderr, err := probeVideoHeight(ctx, input)
+	if err != nil {
+		logger.Warning("Video subtitle probe failed, fallback to 720p style task_type=%s file_id=%d stderr=%s err=%v", t.Type(), state.FileID, probeStderr, err)
+		height = 0
+	}
+
+	filterArg, modeUsed, err := buildSubtitleFilterArg(input, state.Subtitle, height)
 	if err != nil {
 		return task.StatusError, wrapVideoTaskErr(err)
 	}
@@ -216,12 +226,12 @@ func (t *VideoHLSSliceTask) Do(ctx context.Context) (task.Status, error) {
 		return task.StatusError, wrapVideoTaskErr(err)
 	}
 
-	vCodec, aCodec, probeStderr, err := probeVideoCodecs(ctx, input)
+	vCodec, aCodec, hasAudio, probeStderr, err := probeVideoCodecs(ctx, input)
 	if err != nil {
 		logger.Error("Video hls precheck failed task_type=%s file_id=%d stderr=%s err=%v", t.Type(), state.FileID, probeStderr, err)
 		return task.StatusError, wrapVideoTaskErr(err)
 	}
-	if !strings.EqualFold(vCodec, "h264") || !strings.EqualFold(aCodec, "aac") {
+	if !strings.EqualFold(vCodec, "h264") {
 		unsupported := fmt.Errorf("%w: video codec=%q, audio codec=%q", ErrUnsupportedCodec, vCodec, aCodec)
 		return task.StatusError, wrapVideoTaskErr(unsupported)
 	}
@@ -233,7 +243,7 @@ func (t *VideoHLSSliceTask) Do(ctx context.Context) (task.Status, error) {
 
 	playlistPath := filepath.Join(outputDir, "index.m3u8")
 	segmentPattern := filepath.Join(outputDir, "segment_%05d.ts")
-	ffmpegStderr, err := runHLSFFMpeg(ctx, input, playlistPath, segmentPattern)
+	ffmpegStderr, err := runHLSFFMpeg(ctx, input, playlistPath, segmentPattern, aCodec, hasAudio)
 	if err != nil {
 		logger.Error("Video hls ffmpeg failed task_type=%s file_id=%d stderr=%s err=%v", t.Type(), state.FileID, ffmpegStderr, err)
 		return task.StatusError, wrapVideoTaskErr(err)
@@ -303,6 +313,7 @@ type ffprobeCodecPayload struct {
 	Streams []struct {
 		CodecType string `json:"codec_type"`
 		CodecName string `json:"codec_name"`
+		Height    int    `json:"height"`
 	} `json:"streams"`
 }
 
@@ -359,7 +370,97 @@ func resolveVideoTaskInput(ctx context.Context, dep videoTaskDep, fileID int) (*
 	return fileModel, primary.Source, nil
 }
 
-func probeVideoCodecs(ctx context.Context, input string) (string, string, string, error) {
+func probeVideoCodecs(ctx context.Context, input string) (string, string, bool, string, error) {
+	payload, stderrText, err := runVideoFFProbe(ctx, input)
+	if err != nil {
+		return "", "", false, stderrText, err
+	}
+
+	var videoCodec string
+	var audioCodec string
+	hasAudio := false
+	for _, stream := range payload.Streams {
+		switch strings.ToLower(strings.TrimSpace(stream.CodecType)) {
+		case "video":
+			if videoCodec == "" {
+				videoCodec = strings.TrimSpace(stream.CodecName)
+			}
+		case "audio":
+			hasAudio = true
+			if audioCodec == "" {
+				audioCodec = strings.TrimSpace(stream.CodecName)
+			}
+		}
+	}
+
+	return videoCodec, audioCodec, hasAudio, stderrText, nil
+}
+
+func probeVideoHeight(ctx context.Context, input string) (int, string, error) {
+	payload, stderrText, err := runVideoFFProbe(ctx, input)
+	if err != nil {
+		return 0, stderrText, err
+	}
+
+	for _, stream := range payload.Streams {
+		if strings.EqualFold(strings.TrimSpace(stream.CodecType), "video") {
+			if stream.Height > 0 {
+				return stream.Height, stderrText, nil
+			}
+			break
+		}
+	}
+
+	return 0, stderrText, nil
+}
+
+func buildHLSOutputDir(fileID int) string {
+	return filepath.Join(os.TempDir(), "cloudreve-hls", strconv.Itoa(fileID), strconv.FormatInt(time.Now().UnixNano(), 10))
+}
+
+func buildSubtitleBurnOutputPath(fileID int) string {
+	return filepath.Join(os.TempDir(), "cloudreve-subtitle-burn", strconv.Itoa(fileID), fmt.Sprintf("burned_%d.mp4", time.Now().UnixNano()))
+}
+
+func runHLSFFMpeg(ctx context.Context, input, playlistPath, segmentPattern, audioCodec string, hasAudio bool) (string, error) {
+	args := []string{
+		"-v", "warning",
+		"-y",
+		"-i", input,
+		"-c:v", "copy",
+	}
+
+	if hasAudio {
+		if strings.EqualFold(audioCodec, "aac") {
+			args = append(args, "-c:a", "copy")
+		} else {
+			args = append(args, "-c:a", "aac")
+		}
+	} else {
+		args = append(args, "-an")
+	}
+
+	args = append(args,
+		"-hls_time", "10",
+		"-hls_playlist_type", "vod",
+		"-hls_segment_filename", segmentPattern,
+		playlistPath,
+	)
+
+	cmd := newVideoFFMpegCommand(ctx, args)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	stderrText := strings.TrimSpace(stderr.String())
+	if err != nil {
+		return stderrText, fmt.Errorf("failed to invoke ffmpeg: %w (stderr: %s)", err, stderrText)
+	}
+
+	return stderrText, nil
+}
+
+func runVideoFFProbe(ctx context.Context, input string) (*ffprobeCodecPayload, string, error) {
 	cmd := exec.CommandContext(ctx, "ffprobe",
 		"-v", "warning",
 		"-print_format", "json",
@@ -375,63 +476,15 @@ func probeVideoCodecs(ctx context.Context, input string) (string, string, string
 	err := cmd.Run()
 	stderrText := strings.TrimSpace(stderr.String())
 	if err != nil {
-		return "", "", stderrText, fmt.Errorf("failed to invoke ffprobe: %w (stderr: %s)", err, stderrText)
+		return nil, stderrText, fmt.Errorf("failed to invoke ffprobe: %w (stderr: %s)", err, stderrText)
 	}
 
 	var payload ffprobeCodecPayload
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
-		return "", "", stderrText, fmt.Errorf("failed to parse ffprobe output: %w", err)
+		return nil, stderrText, fmt.Errorf("failed to parse ffprobe output: %w", err)
 	}
 
-	var videoCodec string
-	var audioCodec string
-	for _, stream := range payload.Streams {
-		switch strings.ToLower(strings.TrimSpace(stream.CodecType)) {
-		case "video":
-			if videoCodec == "" {
-				videoCodec = strings.TrimSpace(stream.CodecName)
-			}
-		case "audio":
-			if audioCodec == "" {
-				audioCodec = strings.TrimSpace(stream.CodecName)
-			}
-		}
-	}
-
-	return videoCodec, audioCodec, stderrText, nil
-}
-
-func buildHLSOutputDir(fileID int) string {
-	return filepath.Join(os.TempDir(), "cloudreve-hls", strconv.Itoa(fileID), strconv.FormatInt(time.Now().UnixNano(), 10))
-}
-
-func buildSubtitleBurnOutputPath(fileID int) string {
-	return filepath.Join(os.TempDir(), "cloudreve-subtitle-burn", strconv.Itoa(fileID), fmt.Sprintf("burned_%d.mp4", time.Now().UnixNano()))
-}
-
-func runHLSFFMpeg(ctx context.Context, input, playlistPath, segmentPattern string) (string, error) {
-	args := []string{
-		"-v", "warning",
-		"-y",
-		"-i", input,
-		"-codec", "copy",
-		"-hls_time", "10",
-		"-hls_playlist_type", "vod",
-		"-hls_segment_filename", segmentPattern,
-		playlistPath,
-	}
-
-	cmd := newVideoFFMpegCommand(ctx, args)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	stderrText := strings.TrimSpace(stderr.String())
-	if err != nil {
-		return stderrText, fmt.Errorf("failed to invoke ffmpeg: %w (stderr: %s)", err, stderrText)
-	}
-
-	return stderrText, nil
+	return &payload, stderrText, nil
 }
 
 func runSubtitleBurnFFMpeg(ctx context.Context, input, filterArg, output string) (string, error) {
@@ -526,7 +579,7 @@ func readVideoFFMpegSettingInt(ctx context.Context, dep videoTaskDep, name strin
 	return parsed
 }
 
-func buildSubtitleFilterArg(input string, option *VideoSubtitleOption) (string, string, error) {
+func buildSubtitleFilterArg(input string, option *VideoSubtitleOption, videoHeight int) (string, string, error) {
 	mode := VideoSubtitleModeAuto
 	if option != nil && strings.TrimSpace(option.Mode) != "" {
 		mode = strings.ToLower(strings.TrimSpace(option.Mode))
@@ -540,7 +593,7 @@ func buildSubtitleFilterArg(input string, option *VideoSubtitleOption) (string, 
 		}
 
 		if externalPath != "" {
-			return "subtitles=" + escapeFFMpegSubtitlePath(externalPath), VideoSubtitleModeExternal, nil
+			return buildExternalSubtitleFilterArg(externalPath, videoHeight), VideoSubtitleModeExternal, nil
 		}
 
 		return "subtitles=" + escapeFFMpegSubtitlePath(input) + ":si=0", VideoSubtitleModeEmbedded, nil
@@ -554,7 +607,7 @@ func buildSubtitleFilterArg(input string, option *VideoSubtitleOption) (string, 
 			return "", "", err
 		}
 
-		return "subtitles=" + escapeFFMpegSubtitlePath(externalPath), VideoSubtitleModeExternal, nil
+		return buildExternalSubtitleFilterArg(externalPath, videoHeight), VideoSubtitleModeExternal, nil
 	case VideoSubtitleModeEmbedded:
 		if option == nil || option.EmbeddedIndex == nil {
 			return "", "", fmt.Errorf("missing subtitle embedded index (%w)", CriticalErr)
@@ -567,6 +620,23 @@ func buildSubtitleFilterArg(input string, option *VideoSubtitleOption) (string, 
 	default:
 		return "", "", fmt.Errorf("invalid subtitle mode %q (%w)", mode, CriticalErr)
 	}
+}
+
+func buildExternalSubtitleFilterArg(path string, videoHeight int) string {
+	base := "subtitles=" + escapeFFMpegSubtitlePath(path)
+	if !strings.EqualFold(filepath.Ext(path), ".srt") {
+		return base
+	}
+
+	return base + ":force_style='" + subtitleForceStyle(videoHeight) + "'"
+}
+
+func subtitleForceStyle(videoHeight int) string {
+	if videoHeight >= subtitleStyleHeightCutoff {
+		return subtitleStyle1080p
+	}
+
+	return subtitleStyle720p
 }
 
 func resolveExternalSubtitlePath(input, subtitleName string) (string, error) {
@@ -639,6 +709,7 @@ func escapeFFMpegSubtitlePath(input string) string {
 		`:`, `\\:`,
 		`'`, `\\'`,
 		`,`, `\\,`,
+		`;`, `\\;`,
 		`[`, `\\[`,
 		`]`, `\\]`,
 	)

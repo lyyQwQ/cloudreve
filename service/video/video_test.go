@@ -392,6 +392,76 @@ func TestSliceHLS_UnsupportedCodecReturns400(t *testing.T) {
 	}
 }
 
+func TestSliceHLS_AllowsNonAACAndNoAudio(t *testing.T) {
+	testCases := []struct {
+		name        string
+		probeOutput string
+	}{
+		{
+			name: "h264 with non-aac audio",
+			probeOutput: `
+{
+  "format": {"duration": "60", "bit_rate": "3000000"},
+  "streams": [
+    {"index": 0, "codec_name": "h264", "codec_type": "video", "width": 640, "height": 360},
+    {"index": 1, "codec_name": "mp3", "codec_type": "audio"}
+  ]
+}
+`,
+		},
+		{
+			name: "h264 without audio",
+			probeOutput: `
+{
+  "format": {"duration": "60", "bit_rate": "3000000"},
+  "streams": [
+    {"index": 0, "codec_name": "h264", "codec_type": "video", "width": 640, "height": 360}
+  ]
+}
+`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &memLogger{}
+			dep, client, user := newTestDep(t, l)
+			defer client.Close()
+			r := newTestRouter(dep, user)
+
+			videoPath := t.TempDir() + "/movie.mp4"
+			if err := os.WriteFile(videoPath, []byte("video"), 0600); err != nil {
+				t.Fatalf("write video: %v", err)
+			}
+
+			fileID := mustCreateVideoFileFixture(t, client, user.ID, videoPath)
+			setFakeFFProbe(t, tc.probeOutput, "", 0)
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/v4/video/hls", bytes.NewBufferString(fmt.Sprintf(`{"file_id":%d}`, fileID)))
+			req.Header.Set("Content-Type", "application/json")
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+			}
+
+			resp := decodeResp(t, w)
+			if resp.Code != 0 {
+				t.Fatalf("expected success response, got body=%s", w.Body.String())
+			}
+
+			n, err := client.Task.Query().Where(task.Type(queue.VideoHLSSliceTaskType)).Count(context.Background())
+			if err != nil {
+				t.Fatalf("count tasks: %v", err)
+			}
+			if n != 1 {
+				t.Fatalf("expected one hls task created, got %d", n)
+			}
+		})
+	}
+}
+
 type videoSubtitleListResponse struct {
 	Code int `json:"code"`
 	Data struct {

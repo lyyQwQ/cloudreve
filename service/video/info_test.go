@@ -127,10 +127,15 @@ func TestVideoInfo_HLSCompatibility(t *testing.T) {
 	testCases := []struct {
 		name       string
 		videoCodec string
+		audioCodec string
+		hasAudio   bool
 		want       bool
 	}{
-		{name: "hevc", videoCodec: "hevc", want: false},
-		{name: "vp9", videoCodec: "vp9", want: false},
+		{name: "hevc", videoCodec: "hevc", audioCodec: "aac", hasAudio: true, want: false},
+		{name: "vp9", videoCodec: "vp9", audioCodec: "aac", hasAudio: true, want: false},
+		{name: "h264+aac", videoCodec: "h264", audioCodec: "aac", hasAudio: true, want: true},
+		{name: "h264+mp3", videoCodec: "h264", audioCodec: "mp3", hasAudio: true, want: true},
+		{name: "h264+no-audio", videoCodec: "h264", hasAudio: false, want: true},
 	}
 
 	for _, tc := range testCases {
@@ -146,15 +151,19 @@ func TestVideoInfo_HLSCompatibility(t *testing.T) {
 			}
 			fileID := mustCreateVideoFileFixture(t, client, user.ID, videoPath)
 
+			audioStream := ""
+			if tc.hasAudio {
+				audioStream = fmt.Sprintf(",\n    {\"index\": 1, \"codec_name\": %q, \"codec_type\": \"audio\"}", tc.audioCodec)
+			}
+
 			setFakeFFProbe(t, fmt.Sprintf(`
 {
   "format": {"duration": "60", "bit_rate": "3000000"},
   "streams": [
-    {"index": 0, "codec_name": %q, "codec_type": "video", "width": 640, "height": 360},
-    {"index": 1, "codec_name": "aac", "codec_type": "audio"}
+    {"index": 0, "codec_name": %q, "codec_type": "video", "width": 640, "height": 360}%s
   ]
 }
-`, tc.videoCodec), "", 0)
+`, tc.videoCodec, audioStream), "", 0)
 
 			w := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/api/v4/video/info", bytes.NewBufferString(fmt.Sprintf(`{"file_id":%d}`, fileID)))

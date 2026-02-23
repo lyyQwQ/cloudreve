@@ -405,7 +405,7 @@ func TestVideoHLSSliceTask_DoRunsFFMpegAndPersistsHLS(t *testing.T) {
 		t.Fatalf("read ffmpeg args: %v", err)
 	}
 	args := string(bytes.TrimSpace(argsRaw))
-	for _, expected := range []string{"-codec copy", "-hls_time 10", "-hls_playlist_type vod"} {
+	for _, expected := range []string{"-c:v copy", "-c:a copy", "-hls_time 10", "-hls_playlist_type vod"} {
 		if !strings.Contains(args, expected) {
 			t.Fatalf("expected ffmpeg args to contain %q, got %q", expected, args)
 		}
@@ -430,6 +430,73 @@ func TestVideoHLSSliceTask_DoRunsFFMpegAndPersistsHLS(t *testing.T) {
 	phase := tk.Progress(context.Background())[VideoHLSSliceTaskType]
 	if phase == nil || phase.Identifier == "" || phase.Total <= 0 || phase.Current <= 0 {
 		t.Fatalf("unexpected progress: %+v", phase)
+	}
+}
+
+func TestVideoHLSSliceTask_DoTranscodesNonAACAudio(t *testing.T) {
+	dep, user, fileID := newVideoTaskTestFixture(t)
+
+	binDir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFProbe(t, binDir, `{"streams":[{"codec_type":"video","codec_name":"h264"},{"codec_type":"audio","codec_name":"mp3"}]}`, "", 0)
+	prepareFakeFFMpegSuccess(t, binDir, argsFile)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tk, err := NewVideoHLSSliceTask(context.Background(), fileID, user)
+	if err != nil {
+		t.Fatalf("NewVideoHLSSliceTask: %v", err)
+	}
+
+	status, err := tk.Do(newVideoTaskCtx(dep))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if status != task.StatusCompleted {
+		t.Fatalf("expected completed, got %q", status)
+	}
+
+	argsRaw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read ffmpeg args: %v", err)
+	}
+	args := string(bytes.TrimSpace(argsRaw))
+	if !strings.Contains(args, "-c:v copy") || !strings.Contains(args, "-c:a aac") {
+		t.Fatalf("expected transcode audio args, got %q", args)
+	}
+}
+
+func TestVideoHLSSliceTask_DoAllowsNoAudio(t *testing.T) {
+	dep, user, fileID := newVideoTaskTestFixture(t)
+
+	binDir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFProbe(t, binDir, `{"streams":[{"codec_type":"video","codec_name":"h264"}]}`, "", 0)
+	prepareFakeFFMpegSuccess(t, binDir, argsFile)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tk, err := NewVideoHLSSliceTask(context.Background(), fileID, user)
+	if err != nil {
+		t.Fatalf("NewVideoHLSSliceTask: %v", err)
+	}
+
+	status, err := tk.Do(newVideoTaskCtx(dep))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if status != task.StatusCompleted {
+		t.Fatalf("expected completed, got %q", status)
+	}
+
+	argsRaw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read ffmpeg args: %v", err)
+	}
+	args := string(bytes.TrimSpace(argsRaw))
+	if !strings.Contains(args, "-c:v copy") || !strings.Contains(args, "-an") {
+		t.Fatalf("expected no-audio args, got %q", args)
+	}
+	if strings.Contains(args, "-c:a") {
+		t.Fatalf("unexpected audio codec args for no-audio source, got %q", args)
 	}
 }
 
@@ -472,6 +539,7 @@ func TestVideoSubtitleBurnTask_DoRunsFFMpegExternalSubtitle(t *testing.T) {
 
 	binDir := t.TempDir()
 	argsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFProbe(t, binDir, `{"streams":[{"codec_type":"video","codec_name":"h264","height":1080}]}`, "", 0)
 	prepareFakeFFMpegSuccess(t, binDir, argsFile)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -496,7 +564,7 @@ func TestVideoSubtitleBurnTask_DoRunsFFMpegExternalSubtitle(t *testing.T) {
 		t.Fatalf("read ffmpeg args: %v", err)
 	}
 	args := string(bytes.TrimSpace(argsRaw))
-	for _, expected := range []string{"-vf subtitles=", "movie.zh.srt", "-c:v libx264", "-c:a copy"} {
+	for _, expected := range []string{"-vf subtitles=", "movie.zh.srt", "force_style='FontSize=22,MarginV=28,Outline=0.3,Shadow=1'", "-c:v libx264", "-c:a copy"} {
 		if !strings.Contains(args, expected) {
 			t.Fatalf("expected ffmpeg args to contain %q, got %q", expected, args)
 		}
@@ -513,6 +581,7 @@ func TestVideoSubtitleBurnTask_DoBuildsEmbeddedArgs(t *testing.T) {
 
 	binDir := t.TempDir()
 	argsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFProbe(t, binDir, `{"streams":[{"codec_type":"video","codec_name":"h264","height":1080}]}`, "", 0)
 	prepareFakeFFMpegSuccess(t, binDir, argsFile)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -541,10 +610,17 @@ func TestVideoSubtitleBurnTask_DoBuildsEmbeddedArgs(t *testing.T) {
 	if !strings.Contains(args, ":si=3") {
 		t.Fatalf("expected embedded subtitle ffmpeg arg, got %q", args)
 	}
+	if strings.Contains(args, "force_style=") {
+		t.Fatalf("embedded subtitle should not include force_style, got %q", args)
+	}
 }
 
 func TestVideoSubtitleBurnTask_DoInvalidSubtitleSelectionIsCritical(t *testing.T) {
 	dep, _, fileID := newVideoTaskTestFixture(t)
+
+	binDir := t.TempDir()
+	prepareFakeFFProbe(t, binDir, `{"streams":[{"codec_type":"video","codec_name":"h264","height":720}]}`, "", 0)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	for _, tc := range []struct {
 		name   string
@@ -597,6 +673,7 @@ func TestVideoSubtitleBurnTask_DoErrorIncludesStderr(t *testing.T) {
 	dep, user, fileID := newVideoTaskTestFixture(t)
 
 	binDir := t.TempDir()
+	prepareFakeFFProbe(t, binDir, `{"streams":[{"codec_type":"video","codec_name":"h264","height":720}]}`, "", 0)
 	prepareFakeFFMpegFail(t, binDir, "subtitle burn failed", 1)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -755,7 +832,7 @@ func TestRunHLSFFMpeg_InjectsThreadsAndUsesNiceWhenAvailable(t *testing.T) {
 
 	playlist := filepath.Join(t.TempDir(), "index.m3u8")
 	pattern := filepath.Join(t.TempDir(), "segment_%05d.ts")
-	if _, err := runHLSFFMpeg(newVideoTaskCtx(dep), "input.mp4", playlist, pattern); err != nil {
+	if _, err := runHLSFFMpeg(newVideoTaskCtx(dep), "input.mp4", playlist, pattern, "aac", true); err != nil {
 		t.Fatalf("runHLSFFMpeg: %v", err)
 	}
 
@@ -774,6 +851,78 @@ func TestRunHLSFFMpeg_InjectsThreadsAndUsesNiceWhenAvailable(t *testing.T) {
 	}
 	ffmpegArgs := strings.TrimSpace(string(ffmpegArgsRaw))
 	assertThreadsBeforeInput(t, ffmpegArgs, 4)
+}
+
+func TestBuildSubtitleFilterArg_ForceStyleByResolution(t *testing.T) {
+	baseDir := t.TempDir()
+	input := filepath.Join(baseDir, "movie.mp4")
+	if err := os.WriteFile(input, []byte("video"), 0600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	srtPath := filepath.Join(baseDir, "movie.zh.srt")
+	if err := os.WriteFile(srtPath, []byte("1"), 0600); err != nil {
+		t.Fatalf("write srt: %v", err)
+	}
+
+	filter1080, mode, err := buildSubtitleFilterArg(input, &VideoSubtitleOption{Mode: VideoSubtitleModeExternal, ExternalName: "movie.zh.srt"}, 1080)
+	if err != nil {
+		t.Fatalf("buildSubtitleFilterArg 1080: %v", err)
+	}
+	if mode != VideoSubtitleModeExternal {
+		t.Fatalf("expected mode external, got %q", mode)
+	}
+	if !strings.Contains(filter1080, "force_style='FontSize=22,MarginV=28,Outline=0.3,Shadow=1'") {
+		t.Fatalf("expected 1080 style, got %q", filter1080)
+	}
+
+	filter720, _, err := buildSubtitleFilterArg(input, &VideoSubtitleOption{Mode: VideoSubtitleModeExternal, ExternalName: "movie.zh.srt"}, 720)
+	if err != nil {
+		t.Fatalf("buildSubtitleFilterArg 720: %v", err)
+	}
+	if !strings.Contains(filter720, "force_style='FontSize=18,MarginV=20,Outline=0.3,Shadow=1'") {
+		t.Fatalf("expected 720 style, got %q", filter720)
+	}
+
+	fallbackFilter, _, err := buildSubtitleFilterArg(input, &VideoSubtitleOption{Mode: VideoSubtitleModeExternal, ExternalName: "movie.zh.srt"}, 0)
+	if err != nil {
+		t.Fatalf("buildSubtitleFilterArg fallback: %v", err)
+	}
+	if !strings.Contains(fallbackFilter, "force_style='FontSize=18,MarginV=20,Outline=0.3,Shadow=1'") {
+		t.Fatalf("expected fallback 720 style, got %q", fallbackFilter)
+	}
+}
+
+func TestBuildSubtitleFilterArg_AssSubtitleDoesNotUseForceStyle(t *testing.T) {
+	baseDir := t.TempDir()
+	input := filepath.Join(baseDir, "movie.mp4")
+	if err := os.WriteFile(input, []byte("video"), 0600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	assPath := filepath.Join(baseDir, "movie.zh.ass")
+	if err := os.WriteFile(assPath, []byte("[Script Info]"), 0600); err != nil {
+		t.Fatalf("write ass: %v", err)
+	}
+
+	filterArg, mode, err := buildSubtitleFilterArg(input, &VideoSubtitleOption{Mode: VideoSubtitleModeExternal, ExternalName: "movie.zh.ass"}, 1080)
+	if err != nil {
+		t.Fatalf("buildSubtitleFilterArg ass: %v", err)
+	}
+	if mode != VideoSubtitleModeExternal {
+		t.Fatalf("expected mode external, got %q", mode)
+	}
+	if strings.Contains(filterArg, "force_style=") {
+		t.Fatalf("expected ass without force_style, got %q", filterArg)
+	}
+}
+
+func TestEscapeFFMpegSubtitlePath_EscapesSemicolon(t *testing.T) {
+	raw := "/tmp/a;b.srt"
+	escaped := escapeFFMpegSubtitlePath(raw)
+	if !strings.Contains(escaped, `a\\;b.srt`) {
+		t.Fatalf("expected semicolon escaped, got %q", escaped)
+	}
 }
 
 func TestRunSubtitleBurnFFMpeg_DisablesThreadsAndNiceWhenZero(t *testing.T) {

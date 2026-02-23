@@ -143,7 +143,7 @@ func getVideoInfo(c *gin.Context, fileID int) (*videoInfoData, int, serializer.R
 	}
 
 	res.Subtitles.Embedded = collectEmbeddedSubtitles(meta.Streams)
-	res.HLSCompatible = strings.EqualFold(res.Codec, "h264") && strings.EqualFold(res.AudioCodec, "aac")
+	res.HLSCompatible = strings.EqualFold(res.Codec, "h264")
 
 	return res, http.StatusOK, serializer.Response{}
 }
