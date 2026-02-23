@@ -1,8 +1,10 @@
 ARG NODE_IMAGE=node:20-alpine
 ARG GO_IMAGE=golang:1.25-alpine
+ARG CACHEBUST=0
 
 FROM ${NODE_IMAGE} AS frontend-builder
 
+ARG CACHEBUST
 WORKDIR /src/assets
 
 ENV NODE_OPTIONS=--max-old-space-size=8192
