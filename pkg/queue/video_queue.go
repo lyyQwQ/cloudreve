@@ -19,6 +19,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/ent/node"
+	"github.com/cloudreve/Cloudreve/v4/ent/setting"
 	"github.com/cloudreve/Cloudreve/v4/ent/task"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
@@ -38,6 +39,11 @@ const (
 	hlsAvailableMetadataKey   = "hls:available"
 	hlsAvailableMetadataValue = "1"
 	hlsCodecName              = "h264/aac"
+
+	videoFFMpegThreadsSettingName = "video_ffmpeg_threads"
+	videoFFMpegNiceSettingName    = "video_ffmpeg_nice"
+	videoFFMpegThreadsDefault     = 1
+	videoFFMpegNiceDefault        = 10
 )
 
 type VideoSubtitleOption struct {
@@ -415,7 +421,7 @@ func runHLSFFMpeg(ctx context.Context, input, playlistPath, segmentPattern strin
 		playlistPath,
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd := newVideoFFMpegCommand(ctx, args)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -443,7 +449,7 @@ func runSubtitleBurnFFMpeg(ctx context.Context, input, filterArg, output string)
 		output,
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd := newVideoFFMpegCommand(ctx, args)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -454,6 +460,70 @@ func runSubtitleBurnFFMpeg(ctx context.Context, input, filterArg, output string)
 	}
 
 	return stderrText, nil
+}
+
+func newVideoFFMpegCommand(ctx context.Context, args []string) *exec.Cmd {
+	threads, nice := loadVideoFFMpegRuntimeOptions(ctx)
+	ffmpegArgs := injectFFMpegThreadsBeforeInput(args, threads)
+
+	if nice > 0 {
+		if _, err := exec.LookPath("nice"); err == nil {
+			niceArgs := make([]string, 0, len(ffmpegArgs)+3)
+			niceArgs = append(niceArgs, "-n", strconv.Itoa(nice), "ffmpeg")
+			niceArgs = append(niceArgs, ffmpegArgs...)
+			return exec.CommandContext(ctx, "nice", niceArgs...)
+		}
+	}
+
+	return exec.CommandContext(ctx, "ffmpeg", ffmpegArgs...)
+}
+
+func injectFFMpegThreadsBeforeInput(args []string, threads int) []string {
+	if threads <= 0 {
+		return args
+	}
+
+	res := make([]string, 0, len(args)+2)
+	inserted := false
+	for _, arg := range args {
+		if !inserted && arg == "-i" {
+			res = append(res, "-threads", strconv.Itoa(threads))
+			inserted = true
+		}
+		res = append(res, arg)
+	}
+
+	if inserted {
+		return res
+	}
+
+	res = append([]string{"-threads", strconv.Itoa(threads)}, args...)
+	return res
+}
+
+func loadVideoFFMpegRuntimeOptions(ctx context.Context) (int, int) {
+	dep, ok := depFromContext(ctx).(videoTaskDep)
+	if !ok {
+		return videoFFMpegThreadsDefault, videoFFMpegNiceDefault
+	}
+
+	threads := readVideoFFMpegSettingInt(ctx, dep, videoFFMpegThreadsSettingName, videoFFMpegThreadsDefault)
+	nice := readVideoFFMpegSettingInt(ctx, dep, videoFFMpegNiceSettingName, videoFFMpegNiceDefault)
+	return threads, nice
+}
+
+func readVideoFFMpegSettingInt(ctx context.Context, dep videoTaskDep, name string, defaultValue int) int {
+	v, err := dep.DBClient().Setting.Query().Where(setting.Name(name)).Only(ctx)
+	if err != nil {
+		return defaultValue
+	}
+
+	parsed, err := strconv.Atoi(strings.TrimSpace(v.Value))
+	if err != nil {
+		return defaultValue
+	}
+
+	return parsed
 }
 
 func buildSubtitleFilterArg(input string, option *VideoSubtitleOption) (string, string, error) {

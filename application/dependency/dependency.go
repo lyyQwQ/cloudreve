@@ -671,7 +671,7 @@ func (d *dependency) VideoProcessQueue(ctx context.Context) queue.Queue {
 		d.videoProcessQueue.Shutdown()
 	}
 
-	workerNum := 2
+	workerNum := 1
 	if d.ConfigProvider().System().Mode == conf.MasterMode {
 		if v, err := d.SettingClient().Get(ctx, "queue_video_process_worker_num"); err == nil {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {

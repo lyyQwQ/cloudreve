@@ -262,6 +262,7 @@ var (
 		"queue_remote_download_backoff_max_duration": remoteDownloadQueuePostProcessor,
 		"queue_remote_download_max_retry":            remoteDownloadQueuePostProcessor,
 		"queue_remote_download_retry_delay":          remoteDownloadQueuePostProcessor,
+		"queue_video_process_worker_num":             videoProcessQueuePostProcessor,
 		"secret_key":                                 secretKeyPostProcessor,
 	}
 )
@@ -402,6 +403,12 @@ func entityRecycleQueuePostProcessor(ctx context.Context, settings map[string]st
 func thumbQueuePostProcessor(ctx context.Context, settings map[string]string) error {
 	dep := dependency.FromContext(ctx)
 	dep.ThumbQueue(context.WithValue(ctx, dependency.ReloadCtx{}, true)).Start()
+	return nil
+}
+
+func videoProcessQueuePostProcessor(ctx context.Context, settings map[string]string) error {
+	dep := dependency.FromContext(ctx)
+	dep.VideoProcessQueue(context.WithValue(ctx, dependency.ReloadCtx{}, true)).Start()
 	return nil
 }
 

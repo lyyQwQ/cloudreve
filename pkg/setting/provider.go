@@ -124,6 +124,8 @@ type (
 		ThumbGCAfterGen(ctx context.Context) bool
 		// FFMpegPath returns the path of ffmpeg executable.
 		FFMpegPath(ctx context.Context) string
+		VideoFFMpegThreads(ctx context.Context) int
+		VideoFFMpegNice(ctx context.Context) int
 		// FFMpegThumbGeneratorEnabled returns true if ffmpeg thumb generator is enabled.
 		FFMpegThumbGeneratorEnabled(ctx context.Context) bool
 		// FFMpegThumbExts returns the supported extensions of ffmpeg thumb generator.
@@ -447,6 +449,14 @@ func (s *settingProvider) MusicCoverThumbExts(ctx context.Context) []string {
 
 func (s *settingProvider) FFMpegPath(ctx context.Context) string {
 	return s.getString(ctx, "thumb_ffmpeg_path", "ffmpeg")
+}
+
+func (s *settingProvider) VideoFFMpegThreads(ctx context.Context) int {
+	return s.getInt(ctx, "video_ffmpeg_threads", 1)
+}
+
+func (s *settingProvider) VideoFFMpegNice(ctx context.Context) int {
+	return s.getInt(ctx, "video_ffmpeg_nice", 10)
 }
 
 func (s *settingProvider) FFMpegThumbGeneratorEnabled(ctx context.Context) bool {

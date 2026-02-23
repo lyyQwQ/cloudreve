@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -663,4 +664,160 @@ func TestSelectVideoExecutionNode_PreferredAndFallback(t *testing.T) {
 	if selected != master.ID {
 		t.Fatalf("expected selected master node %d, got %d", master.ID, selected)
 	}
+}
+
+func setVideoFFMpegRuntimeOptions(t *testing.T, dep *videoTaskTestDep, threads, nice int) {
+	t.Helper()
+
+	ctx := context.Background()
+	if _, err := dep.client.Setting.Create().SetName(videoFFMpegThreadsSettingName).SetValue(strconv.Itoa(threads)).Save(ctx); err != nil {
+		t.Fatalf("set %s: %v", videoFFMpegThreadsSettingName, err)
+	}
+	if _, err := dep.client.Setting.Create().SetName(videoFFMpegNiceSettingName).SetValue(strconv.Itoa(nice)).Save(ctx); err != nil {
+		t.Fatalf("set %s: %v", videoFFMpegNiceSettingName, err)
+	}
+}
+
+func prepareFakeFFMpegCapture(t *testing.T, dir, argsFile string) {
+	t.Helper()
+
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"echo \"$@\" > \"" + argsFile + "\"",
+		"exit 0",
+	}, "\n") + "\n"
+
+	if err := os.WriteFile(filepath.Join(dir, "ffmpeg"), []byte(script), 0755); err != nil {
+		t.Fatalf("write fake ffmpeg: %v", err)
+	}
+}
+
+func prepareFakeNicePassthrough(t *testing.T, dir, argsFile string) {
+	t.Helper()
+
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		"echo \"$@\" > \"" + argsFile + "\"",
+		"if [ \"$1\" = \"-n\" ]; then",
+		"  shift 2",
+		"fi",
+		"exec \"$@\"",
+	}, "\n") + "\n"
+
+	if err := os.WriteFile(filepath.Join(dir, "nice"), []byte(script), 0755); err != nil {
+		t.Fatalf("write fake nice: %v", err)
+	}
+}
+
+func assertThreadsBeforeInput(t *testing.T, argsRaw string, threads int) {
+	t.Helper()
+
+	parts := strings.Fields(strings.TrimSpace(argsRaw))
+	threadIndex := -1
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == "-threads" {
+			threadIndex = i
+			if parts[i+1] != strconv.Itoa(threads) {
+				t.Fatalf("unexpected thread value, want %d got %q from args %q", threads, parts[i+1], argsRaw)
+			}
+			break
+		}
+	}
+	if threadIndex == -1 {
+		t.Fatalf("expected -threads in args %q", argsRaw)
+	}
+
+	inputIndex := -1
+	for i := 0; i < len(parts); i++ {
+		if parts[i] == "-i" {
+			inputIndex = i
+			break
+		}
+	}
+	if inputIndex == -1 {
+		t.Fatalf("expected -i in args %q", argsRaw)
+	}
+	if threadIndex >= inputIndex {
+		t.Fatalf("expected -threads before -i, args=%q", argsRaw)
+	}
+}
+
+func TestRunHLSFFMpeg_InjectsThreadsAndUsesNiceWhenAvailable(t *testing.T) {
+	dep, _, _ := newVideoTaskTestFixture(t)
+	setVideoFFMpegRuntimeOptions(t, dep, 4, 7)
+
+	binDir := t.TempDir()
+	niceArgsFile := filepath.Join(t.TempDir(), "nice_args.txt")
+	ffmpegArgsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFMpegCapture(t, binDir, ffmpegArgsFile)
+	prepareFakeNicePassthrough(t, binDir, niceArgsFile)
+	t.Setenv("PATH", binDir)
+
+	playlist := filepath.Join(t.TempDir(), "index.m3u8")
+	pattern := filepath.Join(t.TempDir(), "segment_%05d.ts")
+	if _, err := runHLSFFMpeg(newVideoTaskCtx(dep), "input.mp4", playlist, pattern); err != nil {
+		t.Fatalf("runHLSFFMpeg: %v", err)
+	}
+
+	niceArgsRaw, err := os.ReadFile(niceArgsFile)
+	if err != nil {
+		t.Fatalf("read nice args: %v", err)
+	}
+	niceArgs := strings.TrimSpace(string(niceArgsRaw))
+	if !strings.HasPrefix(niceArgs, "-n 7 ffmpeg ") {
+		t.Fatalf("expected nice wrapper args, got %q", niceArgs)
+	}
+
+	ffmpegArgsRaw, err := os.ReadFile(ffmpegArgsFile)
+	if err != nil {
+		t.Fatalf("read ffmpeg args: %v", err)
+	}
+	ffmpegArgs := strings.TrimSpace(string(ffmpegArgsRaw))
+	assertThreadsBeforeInput(t, ffmpegArgs, 4)
+}
+
+func TestRunSubtitleBurnFFMpeg_DisablesThreadsAndNiceWhenZero(t *testing.T) {
+	dep, _, _ := newVideoTaskTestFixture(t)
+	setVideoFFMpegRuntimeOptions(t, dep, 0, 0)
+
+	binDir := t.TempDir()
+	ffmpegArgsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFMpegCapture(t, binDir, ffmpegArgsFile)
+	t.Setenv("PATH", binDir)
+
+	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4")); err != nil {
+		t.Fatalf("runSubtitleBurnFFMpeg: %v", err)
+	}
+
+	ffmpegArgsRaw, err := os.ReadFile(ffmpegArgsFile)
+	if err != nil {
+		t.Fatalf("read ffmpeg args: %v", err)
+	}
+	ffmpegArgs := strings.TrimSpace(string(ffmpegArgsRaw))
+	if strings.Contains(ffmpegArgs, "-threads") {
+		t.Fatalf("unexpected -threads when disabled, args=%q", ffmpegArgs)
+	}
+	if !strings.Contains(ffmpegArgs, "-vf subtitles=test.srt") {
+		t.Fatalf("expected subtitle filter arg, got %q", ffmpegArgs)
+	}
+}
+
+func TestRunSubtitleBurnFFMpeg_FallbackToFFMpegWhenNiceUnavailable(t *testing.T) {
+	dep, _, _ := newVideoTaskTestFixture(t)
+	setVideoFFMpegRuntimeOptions(t, dep, 2, 5)
+
+	binDir := t.TempDir()
+	ffmpegArgsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFMpegCapture(t, binDir, ffmpegArgsFile)
+	t.Setenv("PATH", binDir)
+
+	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4")); err != nil {
+		t.Fatalf("runSubtitleBurnFFMpeg: %v", err)
+	}
+
+	ffmpegArgsRaw, err := os.ReadFile(ffmpegArgsFile)
+	if err != nil {
+		t.Fatalf("read ffmpeg args: %v", err)
+	}
+	assertThreadsBeforeInput(t, strings.TrimSpace(string(ffmpegArgsRaw)), 2)
 }
