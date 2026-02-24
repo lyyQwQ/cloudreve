@@ -3,6 +3,7 @@ package queue
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -698,6 +699,46 @@ func TestVideoSubtitleBurnTask_DoErrorIncludesStderr(t *testing.T) {
 	}
 }
 
+func TestResolveSubtitleLanguage_ExternalParsesToken(t *testing.T) {
+	lang := resolveSubtitleLanguage(&VideoSubtitleOption{Mode: VideoSubtitleModeExternal, ExternalName: "movie.chs.srt"}, VideoSubtitleModeExternal, "", nil)
+	if lang != "chs" {
+		t.Fatalf("expected chs, got %q", lang)
+	}
+}
+
+func TestResolveSubtitleLanguage_EmbeddedUsesProbeLanguage(t *testing.T) {
+	var payload ffprobeCodecPayload
+	if err := json.Unmarshal([]byte(`{"streams":[{"index":0,"codec_type":"subtitle","tags":{"language":"chi"}}]}`), &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	idx := 0
+	lang := resolveSubtitleLanguage(&VideoSubtitleOption{Mode: VideoSubtitleModeEmbedded, EmbeddedIndex: &idx}, VideoSubtitleModeEmbedded, "", &payload)
+	if lang != "chi" {
+		t.Fatalf("expected chi, got %q", lang)
+	}
+}
+
+func TestResolveSubtitleLanguage_FallbackSub(t *testing.T) {
+	lang := resolveSubtitleLanguage(nil, VideoSubtitleModeEmbedded, "", nil)
+	if lang != "sub" {
+		t.Fatalf("expected sub, got %q", lang)
+	}
+}
+
+func TestBuildBurnedOutputFileName_SanitizesLanguageToken(t *testing.T) {
+	name := buildBurnedOutputFileName("movie.mp4", "../../../tmp")
+	if name != "movie_tmp.mp4" {
+		t.Fatalf("unexpected sanitized filename: %q", name)
+	}
+}
+
+func TestBuildBurnedOutputFileName_FallbackLanguage(t *testing.T) {
+	name := buildBurnedOutputFileName("movie.mp4", "///")
+	if name != "movie_sub.mp4" {
+		t.Fatalf("unexpected fallback filename: %q", name)
+	}
+}
+
 func TestSelectVideoExecutionNode_PreferredAndFallback(t *testing.T) {
 	dep, _, _ := newVideoTaskTestFixture(t)
 
@@ -934,7 +975,7 @@ func TestRunSubtitleBurnFFMpeg_DisablesThreadsAndNiceWhenZero(t *testing.T) {
 	prepareFakeFFMpegCapture(t, binDir, ffmpegArgsFile)
 	t.Setenv("PATH", binDir)
 
-	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4")); err != nil {
+	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4"), 0, nil); err != nil {
 		t.Fatalf("runSubtitleBurnFFMpeg: %v", err)
 	}
 
@@ -960,7 +1001,7 @@ func TestRunSubtitleBurnFFMpeg_FallbackToFFMpegWhenNiceUnavailable(t *testing.T)
 	prepareFakeFFMpegCapture(t, binDir, ffmpegArgsFile)
 	t.Setenv("PATH", binDir)
 
-	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4")); err != nil {
+	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4"), 0, nil); err != nil {
 		t.Fatalf("runSubtitleBurnFFMpeg: %v", err)
 	}
 

@@ -542,7 +542,7 @@ func (s *DeleteFileService) Delete(c *gin.Context) error {
 	m := manager.NewFileManager(dep, user)
 	defer m.Recycle()
 
-	uris, err := fs.NewUriFromStrings(s.Uris...)
+	uris, err := fs.NewUriFromStrings(lo.Uniq(s.Uris)...)
 	if err != nil {
 		return serializer.NewError(serializer.CodeParamErr, "unknown uri", err)
 	}

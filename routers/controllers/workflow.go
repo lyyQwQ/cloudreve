@@ -66,3 +66,15 @@ func CancelDownloadTask(c *gin.Context) {
 
 	c.JSON(200, serializer.Response{})
 }
+
+func CancelVideoTask(c *gin.Context) {
+	taskId := hashid.FromContext(c)
+	err := explorer.CancelVideoTask(c, taskId)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	c.JSON(200, serializer.Response{})
+}

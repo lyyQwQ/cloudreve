@@ -1,16 +1,20 @@
 package video
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
+	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/task"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
+	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 	"github.com/cloudreve/Cloudreve/v4/pkg/queue"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
 	"github.com/gin-gonic/gin"
@@ -131,6 +135,16 @@ func createVideoTask(c *gin.Context, taskType string) {
 	if exists {
 		c.JSON(http.StatusConflict, serializer.Response{Code: 1, Msg: "task already exists"})
 		return
+	}
+
+	if taskType == queue.VideoSubtitleBurnTaskType && subtitleOption != nil {
+		fileName, exists, err := checkBurnedOutputExists(c, dep, fileID, user.ID, subtitleOption)
+		if err != nil {
+			logging.FromContext(c).Warning("Video task dedup check failed: %v", err)
+		} else if exists {
+			c.JSON(http.StatusConflict, serializer.Response{Code: 1, Msg: "burned output already exists", Data: gin.H{"file_name": fileName}})
+			return
+		}
 	}
 
 	var tk queue.Task
@@ -268,6 +282,89 @@ func hasPendingTaskForFile(c *gin.Context, dep dependency.Dep, ownerID int, task
 	}
 
 	return false, nil
+}
+
+func checkBurnedOutputExists(ctx context.Context, dep dependency.Dep, fileID int, ownerID int, subtitleOption *queue.VideoSubtitleOption) (string, bool, error) {
+	loadCtx := context.WithValue(ctx, inventory.LoadFileEntity{}, true)
+	fileModel, err := dep.FileClient().GetByID(loadCtx, fileID)
+	if err != nil {
+		return "", false, err
+	}
+
+	parent, err := dep.FileClient().GetParentFile(ctx, fileModel, false)
+	if err != nil {
+		return "", false, err
+	}
+
+	burnedFolder, err := dep.FileClient().GetChildFile(ctx, parent, ownerID, "burned", false)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+
+	baseName := strings.TrimSpace(fileModel.Name)
+	baseName = filepath.Base(baseName)
+	stem := strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	if stem == "" {
+		stem = "video"
+	}
+	stem = strings.ReplaceAll(stem, "/", "_")
+	stem = strings.ReplaceAll(stem, "\\", "_")
+
+	lang := "sub"
+	if subtitleOption != nil {
+		mode := strings.ToLower(strings.TrimSpace(subtitleOption.Mode))
+		if mode == queue.VideoSubtitleModeExternal && strings.TrimSpace(subtitleOption.ExternalName) != "" {
+			externalBase := filepath.Base(strings.TrimSpace(subtitleOption.ExternalName))
+			ext := filepath.Ext(externalBase)
+			base := strings.TrimSuffix(externalBase, ext)
+			if lastDot := strings.LastIndex(base, "."); lastDot >= 0 && lastDot+1 < len(base) {
+				maybe := strings.TrimSpace(base[lastDot+1:])
+				if maybe != "" {
+					lang = maybe
+				}
+			}
+		}
+	}
+	lang = sanitizeLanguage(lang)
+
+	fileName := fmt.Sprintf("%s_%s.mp4", stem, lang)
+	fileName = strings.ReplaceAll(fileName, "/", "_")
+	fileName = strings.ReplaceAll(fileName, "\\", "_")
+
+	_, err = dep.FileClient().GetChildFile(ctx, burnedFolder, ownerID, fileName, false)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+
+	return fileName, true, nil
+}
+
+func sanitizeLanguage(lang string) string {
+	lang = strings.TrimSpace(lang)
+	if lang == "" {
+		return "sub"
+	}
+	lang = filepath.Base(lang)
+	var b strings.Builder
+	b.Grow(len(lang))
+	for _, r := range lang {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	cleaned := strings.Trim(b.String(), "_")
+	if cleaned == "" {
+		return "sub"
+	}
+	return cleaned
 }
 
 func precheckHLSCodec(c *gin.Context, fileID int) (int, serializer.Response, error) {

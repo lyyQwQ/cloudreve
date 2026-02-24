@@ -1,19 +1,24 @@
 package queue
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
+	"github.com/cloudreve/Cloudreve/v4/application/constants"
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/entity"
 	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
@@ -23,6 +28,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/task"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
+	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 )
 
@@ -39,6 +45,7 @@ const (
 	hlsAvailableMetadataKey   = "hls:available"
 	hlsAvailableMetadataValue = "1"
 	hlsCodecName              = "h264/aac"
+	SummaryKeyDst             = "dst"
 
 	videoFFMpegThreadsSettingName = "video_ffmpeg_threads"
 	videoFFMpegNiceSettingName    = "video_ffmpeg_nice"
@@ -48,6 +55,7 @@ const (
 	subtitleStyle1080p        = "FontSize=22,MarginV=28,Outline=0.3,Shadow=1"
 	subtitleStyle720p         = "FontSize=18,MarginV=20,Outline=0.3,Shadow=1"
 	subtitleStyleHeightCutoff = 900
+	ffmpegStderrTailLimit     = 32 * 1024
 )
 
 type VideoSubtitleOption struct {
@@ -60,8 +68,13 @@ type VideoTaskState struct {
 	FileID          int                  `json:"file_id"`
 	NodeID          int                  `json:"node_id,omitempty"`
 	Subtitle        *VideoSubtitleOption `json:"subtitle,omitempty"`
+	Lang            string               `json:"lang,omitempty"`
+	Dst             string               `json:"dst,omitempty"`
+	OutputPath      string               `json:"output_path,omitempty"`
 	ProgressCurrent int64                `json:"progress_current,omitempty"`
 	ProgressTotal   int64                `json:"progress_total,omitempty"`
+	Duration        float64              `json:"duration,omitempty"`
+	FFmpegProgress  float64              `json:"ffmpeg_progress,omitempty"`
 }
 
 func ParseVideoTaskState(state string) (*VideoTaskState, error) {
@@ -168,15 +181,16 @@ func (t *VideoSubtitleBurnTask) Do(ctx context.Context) (task.Status, error) {
 		t.persistState(state)
 	}
 
-	_, input, err := resolveVideoTaskInput(ctx, dep, state.FileID)
+	fileModel, input, err := resolveVideoTaskInput(ctx, dep, state.FileID)
 	if err != nil {
 		return task.StatusError, wrapVideoTaskErr(err)
 	}
 
-	height, probeStderr, err := probeVideoHeight(ctx, input)
+	height, probePayload, probeStderr, err := probeVideoHeight(ctx, input)
 	if err != nil {
 		logger.Warning("Video subtitle probe failed, fallback to 720p style task_type=%s file_id=%d stderr=%s err=%v", t.Type(), state.FileID, probeStderr, err)
 		height = 0
+		probePayload = nil
 	}
 
 	filterArg, modeUsed, err := buildSubtitleFilterArg(input, state.Subtitle, height)
@@ -184,10 +198,32 @@ func (t *VideoSubtitleBurnTask) Do(ctx context.Context) (task.Status, error) {
 		return task.StatusError, wrapVideoTaskErr(err)
 	}
 
+	if probePayload != nil {
+		rawDuration := strings.TrimSpace(probePayload.Format.Duration)
+		if rawDuration != "" && !strings.EqualFold(rawDuration, "N/A") {
+			if parsed, err := strconv.ParseFloat(rawDuration, 64); err == nil && parsed > 0 {
+				state.Duration = parsed
+				t.persistState(state)
+			}
+		}
+	}
+
+	state.Lang = resolveSubtitleLanguage(state.Subtitle, modeUsed, state.Lang, probePayload)
+	t.persistState(state)
+
 	t.updateProgress(2, 4)
 
 	outputPath := buildSubtitleBurnOutputPath(state.FileID)
-	ffmpegStderr, err := runSubtitleBurnFFMpeg(ctx, input, filterArg, outputPath)
+	state.OutputPath = outputPath
+	t.persistState(state)
+
+	onProgress := func(pct float64) {
+		updateVideoTaskFFMpegProgress(t.DBTask, pct)
+	}
+	if state.Duration <= 0 {
+		onProgress = nil
+	}
+	ffmpegStderr, err := runSubtitleBurnFFMpeg(ctx, input, filterArg, outputPath, state.Duration, onProgress)
 	if err != nil {
 		logger.Error("Video subtitle ffmpeg failed task_type=%s file_id=%d mode=%s stderr=%s err=%v", t.Type(), state.FileID, modeUsed, ffmpegStderr, err)
 		return task.StatusError, wrapVideoTaskErr(err)
@@ -197,6 +233,10 @@ func (t *VideoSubtitleBurnTask) Do(ctx context.Context) (task.Status, error) {
 
 	if _, err := os.Stat(outputPath); err != nil {
 		return task.StatusError, wrapVideoTaskErr(fmt.Errorf("subtitle output missing: %w", err))
+	}
+
+	if err := persistBurnedOutput(ctx, t, fileModel, outputPath, state.Lang); err != nil {
+		return task.StatusError, wrapVideoTaskErr(err)
 	}
 
 	t.updateProgress(4, 4)
@@ -237,6 +277,8 @@ func (t *VideoHLSSliceTask) Do(ctx context.Context) (task.Status, error) {
 	}
 
 	outputDir := buildHLSOutputDir(state.FileID)
+	state.OutputPath = outputDir
+	t.persistState(state)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return task.StatusError, wrapVideoTaskErr(fmt.Errorf("failed to create hls output dir: %w", err))
 	}
@@ -283,6 +325,7 @@ func wrapVideoTaskErr(err error) error {
 
 func buildVideoTaskProgress(taskType string, state string) Progresses {
 	progress := &Progress{Total: 1, Current: 0}
+	res := Progresses{taskType: progress}
 	if parsed, err := ParseVideoTaskState(state); err == nil {
 		progress.Identifier = strconv.Itoa(parsed.FileID)
 		if parsed.ProgressTotal > 0 {
@@ -291,17 +334,97 @@ func buildVideoTaskProgress(taskType string, state string) Progresses {
 		if parsed.ProgressCurrent > 0 {
 			progress.Current = parsed.ProgressCurrent
 		}
+
+		if parsed.Duration > 0 {
+			pct := parsed.FFmpegProgress
+			if pct < 0 {
+				pct = 0
+			}
+			if pct > 100 {
+				pct = 100
+			}
+			res["ffmpeg"] = &Progress{Total: 100, Current: int64(pct + 0.5), Identifier: strconv.Itoa(parsed.FileID)}
+		}
 	}
 
-	return Progresses{taskType: progress}
+	return res
 }
 
 func (t *VideoSubtitleBurnTask) Progress(_ context.Context) Progresses {
 	return buildVideoTaskProgress(VideoSubtitleBurnTaskType, t.State())
 }
 
+func (t *VideoSubtitleBurnTask) Summarize(_ hashid.Encoder) *Summary {
+	summary := &Summary{
+		Props: map[string]any{
+			SummaryKeyDst: "",
+		},
+	}
+
+	state, err := ParseVideoTaskState(t.State())
+	if err != nil {
+		return summary
+	}
+
+	summary.NodeID = state.NodeID
+	summary.Props[SummaryKeyDst] = state.Dst
+	return summary
+}
+
+func (t *VideoSubtitleBurnTask) Cleanup(ctx context.Context) error {
+	_ = ctx
+
+	state, err := ParseVideoTaskState(t.State())
+	if err != nil {
+		return nil
+	}
+
+	outputPath := strings.TrimSpace(state.OutputPath)
+	if outputPath == "" {
+		return nil
+	}
+
+	cleaned := filepath.Clean(outputPath)
+	allowedPrefix := filepath.Clean(filepath.Join(os.TempDir(), "cloudreve-subtitle-burn"))
+	if !strings.HasPrefix(cleaned, allowedPrefix+string(os.PathSeparator)) {
+		return nil
+	}
+
+	if err := os.Remove(cleaned); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+
+	return nil
+}
+
 func (t *VideoHLSSliceTask) Progress(_ context.Context) Progresses {
 	return buildVideoTaskProgress(VideoHLSSliceTaskType, t.State())
+}
+
+func (t *VideoHLSSliceTask) Cleanup(ctx context.Context) error {
+	_ = ctx
+
+	state, err := ParseVideoTaskState(t.State())
+	if err != nil {
+		return nil
+	}
+
+	outputDir := strings.TrimSpace(state.OutputPath)
+	if outputDir == "" {
+		return nil
+	}
+
+	cleaned := filepath.Clean(outputDir)
+	tmpDir := filepath.Clean(os.TempDir())
+	if !strings.HasPrefix(cleaned, tmpDir+string(os.PathSeparator)) {
+		return nil
+	}
+
+	if err := os.RemoveAll(cleaned); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+
+	return nil
 }
 
 type videoTaskDep interface {
@@ -311,10 +434,15 @@ type videoTaskDep interface {
 
 type ffprobeCodecPayload struct {
 	Streams []struct {
-		CodecType string `json:"codec_type"`
-		CodecName string `json:"codec_name"`
-		Height    int    `json:"height"`
+		Index     int               `json:"index"`
+		CodecType string            `json:"codec_type"`
+		CodecName string            `json:"codec_name"`
+		Height    int               `json:"height"`
+		Tags      map[string]string `json:"tags"`
 	} `json:"streams"`
+	Format struct {
+		Duration string `json:"duration"`
+	} `json:"format"`
 }
 
 func resolveVideoTaskDep(ctx context.Context) (videoTaskDep, error) {
@@ -396,22 +524,22 @@ func probeVideoCodecs(ctx context.Context, input string) (string, string, bool, 
 	return videoCodec, audioCodec, hasAudio, stderrText, nil
 }
 
-func probeVideoHeight(ctx context.Context, input string) (int, string, error) {
+func probeVideoHeight(ctx context.Context, input string) (int, *ffprobeCodecPayload, string, error) {
 	payload, stderrText, err := runVideoFFProbe(ctx, input)
 	if err != nil {
-		return 0, stderrText, err
+		return 0, nil, stderrText, err
 	}
 
 	for _, stream := range payload.Streams {
 		if strings.EqualFold(strings.TrimSpace(stream.CodecType), "video") {
 			if stream.Height > 0 {
-				return stream.Height, stderrText, nil
+				return stream.Height, payload, stderrText, nil
 			}
 			break
 		}
 	}
 
-	return 0, stderrText, nil
+	return 0, payload, stderrText, nil
 }
 
 func buildHLSOutputDir(fileID int) string {
@@ -420,6 +548,274 @@ func buildHLSOutputDir(fileID int) string {
 
 func buildSubtitleBurnOutputPath(fileID int) string {
 	return filepath.Join(os.TempDir(), "cloudreve-subtitle-burn", strconv.Itoa(fileID), fmt.Sprintf("burned_%d.mp4", time.Now().UnixNano()))
+}
+
+func persistBurnedOutput(ctx context.Context, taskRef *VideoSubtitleBurnTask, fileModel *ent.File, outputPath, lang string) error {
+	if taskRef == nil || fileModel == nil {
+		return fmt.Errorf("invalid burn persist argument (%w)", CriticalErr)
+	}
+
+	dep, err := resolveVideoTaskDep(ctx)
+	if err != nil {
+		return err
+	}
+
+	srcSource, err := resolvePrimaryEntitySource(ctx, dep, fileModel)
+	if err != nil {
+		return err
+	}
+
+	outputInfo, err := os.Stat(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat burned output: %w", err)
+	}
+
+	fileName := buildBurnedOutputFileName(fileModel.Name, lang)
+	parentPhysicalDir := filepath.Dir(srcSource)
+	dstPhysicalPath := filepath.Join(parentPhysicalDir, "burned", fileName)
+	dstDir := filepath.Dir(dstPhysicalPath)
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return fmt.Errorf("failed to create burned output directory: %w", err)
+	}
+
+	_, statErr := os.Stat(dstPhysicalPath)
+	dstExisted := statErr == nil
+
+	tmpDstPhysicalPath := fmt.Sprintf("%s.tmp-%d", dstPhysicalPath, time.Now().UnixNano())
+	if err := copyLocalFile(outputPath, tmpDstPhysicalPath); err != nil {
+		return fmt.Errorf("failed to persist burned output file: %w", err)
+	}
+	if err := os.Rename(tmpDstPhysicalPath, dstPhysicalPath); err != nil {
+		_ = os.Remove(tmpDstPhysicalPath)
+		return fmt.Errorf("failed to move burned output file: %w", err)
+	}
+
+	persisted := false
+	defer func() {
+		if !persisted && !dstExisted {
+			_ = os.Remove(dstPhysicalPath)
+		}
+	}()
+
+	burnedFolder, err := ensureBurnedFolder(ctx, dep, fileModel)
+	if err != nil {
+		return err
+	}
+
+	if err := upsertBurnedFileRecord(ctx, dep, burnedFolder, fileModel, fileName, dstPhysicalPath, outputInfo.Size()); err != nil {
+		return err
+	}
+	persisted = true
+
+	dstURI, err := buildBurnedOutputURI(ctx, dep, burnedFolder, fileName)
+	if err != nil {
+		return err
+	}
+
+	state, err := ParseVideoTaskState(taskRef.State())
+	if err != nil {
+		return fmt.Errorf("failed to parse video task state: %w", err)
+	}
+
+	state.Dst = dstURI
+	taskRef.persistState(state)
+	return nil
+}
+
+func buildBurnedOutputFileName(fileName, lang string) string {
+	baseName := filepath.Base(strings.TrimSpace(fileName))
+	stem := strings.TrimSuffix(baseName, filepath.Ext(baseName))
+	if stem == "" {
+		stem = "video"
+	}
+	stem = strings.ReplaceAll(stem, "/", "_")
+	stem = strings.ReplaceAll(stem, "\\", "_")
+
+	return fmt.Sprintf("%s_%s.mp4", stem, sanitizeBurnedOutputLang(lang))
+}
+
+func sanitizeBurnedOutputLang(lang string) string {
+	lang = filepath.Base(strings.TrimSpace(lang))
+	if lang == "" {
+		return "sub"
+	}
+
+	b := strings.Builder{}
+	b.Grow(len(lang))
+	for _, r := range lang {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune('_')
+	}
+
+	cleaned := strings.Trim(b.String(), "_")
+	if cleaned == "" {
+		return "sub"
+	}
+
+	return cleaned
+}
+
+func resolvePrimaryEntitySource(ctx context.Context, dep videoTaskDep, fileModel *ent.File) (string, error) {
+	if fileModel.PrimaryEntity <= 0 {
+		return "", fmt.Errorf("file has no primary entity (%w)", CriticalErr)
+	}
+
+	for _, e := range fileModel.Edges.Entities {
+		if e != nil && e.ID == fileModel.PrimaryEntity {
+			source := strings.TrimSpace(e.Source)
+			if source == "" {
+				return "", fmt.Errorf("primary entity source is empty (%w)", CriticalErr)
+			}
+			return source, nil
+		}
+	}
+
+	e, err := dep.DBClient().Entity.Query().Where(entity.ID(fileModel.PrimaryEntity)).Only(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return "", fmt.Errorf("primary entity not found: %w (%w)", err, CriticalErr)
+		}
+		return "", fmt.Errorf("failed to query primary entity: %w", err)
+	}
+
+	source := strings.TrimSpace(e.Source)
+	if source == "" {
+		return "", fmt.Errorf("primary entity source is empty (%w)", CriticalErr)
+	}
+
+	return source, nil
+}
+
+func ensureBurnedFolder(ctx context.Context, dep videoTaskDep, fileModel *ent.File) (*ent.File, error) {
+	if fileModel == nil {
+		return nil, fmt.Errorf("file model is nil (%w)", CriticalErr)
+	}
+
+	parent, err := dep.FileClient().GetParentFile(ctx, fileModel, false)
+	if err != nil && !ent.IsNotFound(err) {
+		return nil, fmt.Errorf("failed to load source parent folder: %w", err)
+	}
+	if ent.IsNotFound(err) {
+		if fileModel.FileChildren > 0 {
+			parent, err = dep.DBClient().File.Get(ctx, fileModel.FileChildren)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load source parent folder: %w", err)
+			}
+		} else {
+			parent = nil
+		}
+	}
+
+	burnedFolder, err := dep.FileClient().CreateFolder(ctx, parent, &inventory.CreateFolderParameters{
+		Owner: fileModel.OwnerID,
+		Name:  "burned",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create burned folder: %w", err)
+	}
+
+	return burnedFolder, nil
+}
+
+func upsertBurnedFileRecord(ctx context.Context, dep videoTaskDep, burnedFolder, fileModel *ent.File, fileName, source string, size int64) error {
+	if burnedFolder == nil {
+		return fmt.Errorf("burned folder is nil (%w)", CriticalErr)
+	}
+
+	entityArgs := &inventory.EntityParameters{
+		OwnerID:         fileModel.OwnerID,
+		EntityType:      types.EntityTypeVersion,
+		StoragePolicyID: fileModel.StoragePolicyFiles,
+		Source:          source,
+		Size:            size,
+		Importing:       true,
+	}
+
+	existing, err := dep.FileClient().GetChildFile(ctx, burnedFolder, fileModel.OwnerID, fileName, false)
+	if err != nil {
+		if !ent.IsNotFound(err) {
+			return fmt.Errorf("failed to query burned file: %w", err)
+		}
+
+		created, entityModel, _, err := dep.FileClient().CreateFile(ctx, burnedFolder, &inventory.CreateFileParameters{
+			FileType:         types.FileTypeFile,
+			Name:             fileName,
+			StoragePolicyID:  fileModel.StoragePolicyFiles,
+			EntityParameters: entityArgs,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create burned file: %w", err)
+		}
+
+		if entityModel != nil {
+			if err := dep.FileClient().SetPrimaryEntity(ctx, created, entityModel); err != nil {
+				return fmt.Errorf("failed to set burned file primary entity: %w", err)
+			}
+		}
+
+		return nil
+	}
+
+	entityModel, _, err := dep.FileClient().CreateEntity(ctx, existing, entityArgs)
+	if err != nil {
+		return fmt.Errorf("failed to create burned file entity: %w", err)
+	}
+
+	if err := dep.FileClient().SetPrimaryEntity(ctx, existing, entityModel); err != nil {
+		return fmt.Errorf("failed to update burned file primary entity: %w", err)
+	}
+
+	return nil
+}
+
+func buildBurnedOutputURI(ctx context.Context, dep videoTaskDep, burnedFolder *ent.File, fileName string) (string, error) {
+	parts := []string{fileName}
+	current := burnedFolder
+	for current != nil {
+		if !(current.FileChildren <= 0 && current.Name == inventory.RootFolderName) {
+			parts = append([]string{current.Name}, parts...)
+		}
+
+		if current.FileChildren <= 0 {
+			break
+		}
+
+		parent, err := dep.DBClient().File.Get(ctx, current.FileChildren)
+		if err != nil {
+			return "", fmt.Errorf("failed to build burn output uri: %w", err)
+		}
+		current = parent
+	}
+
+	path := strings.Join(parts, "/")
+	if path == "" {
+		return fmt.Sprintf("%s://%s", constants.CloudreveScheme, constants.FileSystemMy), nil
+	}
+
+	return fmt.Sprintf("%s://%s/%s", constants.CloudreveScheme, constants.FileSystemMy, path), nil
+}
+
+func copyLocalFile(src, dst string) error {
+	srcHandle, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcHandle.Close()
+
+	dstHandle, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstHandle.Close()
+
+	if _, err := io.Copy(dstHandle, srcHandle); err != nil {
+		return err
+	}
+
+	return dstHandle.Sync()
 }
 
 func runHLSFFMpeg(ctx context.Context, input, playlistPath, segmentPattern, audioCodec string, hasAudio bool) (string, error) {
@@ -448,13 +844,46 @@ func runHLSFFMpeg(ctx context.Context, input, playlistPath, segmentPattern, audi
 	)
 
 	cmd := newVideoFFMpegCommand(ctx, args)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	stderrText := strings.TrimSpace(stderr.String())
+	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return stderrText, fmt.Errorf("failed to invoke ffmpeg: %w (stderr: %s)", err, stderrText)
+		return "", fmt.Errorf("failed to prepare ffmpeg stdout pipe: %w", err)
+	}
+
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return "", fmt.Errorf("failed to prepare ffmpeg stderr pipe: %w", err)
+	}
+
+	tail := newBoundedTailBuffer(ffmpegStderrTailLimit)
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("failed to start ffmpeg: %w", err)
+	}
+
+	var wg sync.WaitGroup
+	var stdoutErr error
+	var stderrErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, stdoutErr = io.Copy(io.Discard, stdoutPipe)
+	}()
+	go func() {
+		defer wg.Done()
+		_, stderrErr = io.Copy(tail, stderrPipe)
+	}()
+
+	waitErr := cmd.Wait()
+	wg.Wait()
+
+	stderrText := strings.TrimSpace(tail.String())
+	if stdoutErr != nil {
+		return stderrText, fmt.Errorf("failed to read ffmpeg stdout output: %w", stdoutErr)
+	}
+	if stderrErr != nil {
+		return stderrText, fmt.Errorf("failed to read ffmpeg stderr output: %w", stderrErr)
+	}
+	if waitErr != nil {
+		return stderrText, fmt.Errorf("failed to invoke ffmpeg: %w (stderr: %s)", waitErr, stderrText)
 	}
 
 	return stderrText, nil
@@ -465,6 +894,7 @@ func runVideoFFProbe(ctx context.Context, input string) (*ffprobeCodecPayload, s
 		"-v", "warning",
 		"-print_format", "json",
 		"-show_streams",
+		"-show_format",
 		input,
 	)
 
@@ -487,7 +917,7 @@ func runVideoFFProbe(ctx context.Context, input string) (*ffprobeCodecPayload, s
 	return &payload, stderrText, nil
 }
 
-func runSubtitleBurnFFMpeg(ctx context.Context, input, filterArg, output string) (string, error) {
+func runSubtitleBurnFFMpeg(ctx context.Context, input, filterArg, output string, duration float64, onProgress func(float64)) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(output), 0755); err != nil {
 		return "", fmt.Errorf("failed to create subtitle output dir: %w", err)
 	}
@@ -499,20 +929,153 @@ func runSubtitleBurnFFMpeg(ctx context.Context, input, filterArg, output string)
 		"-vf", filterArg,
 		"-c:v", "libx264",
 		"-c:a", "copy",
+		"-nostats",
+		"-progress", "pipe:1",
 		output,
 	}
 
 	cmd := newVideoFFMpegCommand(ctx, args)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	stderrText := strings.TrimSpace(stderr.String())
+	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return stderrText, fmt.Errorf("failed to invoke ffmpeg: %w (stderr: %s)", err, stderrText)
+		return "", fmt.Errorf("failed to prepare ffmpeg stdout pipe: %w", err)
+	}
+
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return "", fmt.Errorf("failed to prepare ffmpeg stderr pipe: %w", err)
+	}
+
+	tail := newBoundedTailBuffer(ffmpegStderrTailLimit)
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("failed to start ffmpeg: %w", err)
+	}
+
+	var wg sync.WaitGroup
+	var progressEnd bool
+	var stdoutErr error
+	var stderrErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		progressEnd, stdoutErr = readFFMpegProgressOutput(stdoutPipe, duration, onProgress)
+	}()
+	go func() {
+		defer wg.Done()
+		_, stderrErr = io.Copy(tail, stderrPipe)
+	}()
+
+	waitErr := cmd.Wait()
+	wg.Wait()
+
+	stderrText := strings.TrimSpace(tail.String())
+	if stdoutErr != nil {
+		return stderrText, fmt.Errorf("failed to read ffmpeg progress output: %w", stdoutErr)
+	}
+	if stderrErr != nil {
+		return stderrText, fmt.Errorf("failed to read ffmpeg stderr output: %w", stderrErr)
+	}
+	if waitErr != nil {
+		return stderrText, fmt.Errorf("failed to invoke ffmpeg: %w (stderr: %s)", waitErr, stderrText)
+	}
+
+	if progressEnd && onProgress != nil && duration > 0 {
+		onProgress(100)
 	}
 
 	return stderrText, nil
+}
+
+type boundedTailBuffer struct {
+	limit int
+	buf   []byte
+}
+
+func newBoundedTailBuffer(limit int) *boundedTailBuffer {
+	if limit < 0 {
+		limit = 0
+	}
+
+	return &boundedTailBuffer{limit: limit}
+}
+
+func (b *boundedTailBuffer) Write(p []byte) (int, error) {
+	if b.limit == 0 {
+		return len(p), nil
+	}
+
+	if len(p) >= b.limit {
+		b.buf = append(b.buf[:0], p[len(p)-b.limit:]...)
+		return len(p), nil
+	}
+
+	if len(b.buf)+len(p) <= b.limit {
+		b.buf = append(b.buf, p...)
+		return len(p), nil
+	}
+
+	overflow := len(b.buf) + len(p) - b.limit
+	copy(b.buf, b.buf[overflow:])
+	b.buf = b.buf[:len(b.buf)-overflow]
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+func (b *boundedTailBuffer) String() string {
+	return string(b.buf)
+}
+
+func readFFMpegProgressOutput(r io.Reader, duration float64, onProgress func(float64)) (bool, error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
+
+	progressEnd := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+
+		switch strings.TrimSpace(key) {
+		case "out_time_us":
+			if duration <= 0 || onProgress == nil {
+				continue
+			}
+
+			outTimeUS, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if err != nil {
+				continue
+			}
+
+			progress := float64(outTimeUS) / 1_000_000 / duration * 100
+			onProgress(clampFFMpegProgress(progress))
+		case "progress":
+			if strings.EqualFold(strings.TrimSpace(value), "end") {
+				progressEnd = true
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return progressEnd, err
+	}
+
+	return progressEnd, nil
+}
+
+func clampFFMpegProgress(progress float64) float64 {
+	if progress < 0 {
+		return 0
+	}
+	if progress > 100 {
+		return 100
+	}
+
+	return progress
 }
 
 func newVideoFFMpegCommand(ctx context.Context, args []string) *exec.Cmd {
@@ -620,6 +1183,63 @@ func buildSubtitleFilterArg(input string, option *VideoSubtitleOption, videoHeig
 	default:
 		return "", "", fmt.Errorf("invalid subtitle mode %q (%w)", mode, CriticalErr)
 	}
+}
+
+func resolveSubtitleLanguage(option *VideoSubtitleOption, modeUsed, current string, probePayload *ffprobeCodecPayload) string {
+	lang := strings.TrimSpace(current)
+	if option == nil {
+		if lang != "" {
+			return lang
+		}
+		return "sub"
+	}
+
+	switch modeUsed {
+	case VideoSubtitleModeExternal:
+		externalName := strings.TrimSpace(option.ExternalName)
+		if externalName != "" {
+			ext := filepath.Ext(externalName)
+			base := strings.TrimSuffix(externalName, ext)
+			if lastDot := strings.LastIndex(base, "."); lastDot >= 0 && lastDot+1 < len(base) {
+				resolved := strings.TrimSpace(base[lastDot+1:])
+				if resolved != "" {
+					return resolved
+				}
+			}
+		}
+	case VideoSubtitleModeEmbedded, VideoSubtitleModeAuto:
+		idx := 0
+		if option.EmbeddedIndex != nil {
+			idx = *option.EmbeddedIndex
+		}
+
+		if probePayload != nil {
+			for _, stream := range probePayload.Streams {
+				if stream.Index != idx {
+					continue
+				}
+				if !strings.EqualFold(strings.TrimSpace(stream.CodecType), "subtitle") {
+					continue
+				}
+				if stream.Tags != nil {
+					resolved := strings.TrimSpace(stream.Tags["language"])
+					if resolved != "" {
+						return resolved
+					}
+				}
+			}
+		}
+
+		if lang != "" {
+			return lang
+		}
+	}
+
+	if lang != "" {
+		return lang
+	}
+
+	return "sub"
 }
 
 func buildExternalSubtitleFilterArg(path string, videoHeight int) string {
@@ -830,6 +1450,10 @@ func (t *VideoHLSSliceTask) updateProgress(current, total int64) {
 	updateVideoTaskProgress(t.DBTask, current, total)
 }
 
+func (t *VideoHLSSliceTask) persistState(state *VideoTaskState) {
+	persistVideoTaskState(t.DBTask, state)
+}
+
 func (t *VideoSubtitleBurnTask) updateProgress(current, total int64) {
 	updateVideoTaskProgress(t.DBTask, current, total)
 }
@@ -850,6 +1474,20 @@ func updateVideoTaskProgress(taskRef *DBTask, current, total int64) {
 
 	state.ProgressCurrent = current
 	state.ProgressTotal = total
+	persistVideoTaskState(taskRef, state)
+}
+
+func updateVideoTaskFFMpegProgress(taskRef *DBTask, pct float64) {
+	if taskRef == nil {
+		return
+	}
+
+	state, err := ParseVideoTaskState(taskRef.State())
+	if err != nil {
+		return
+	}
+
+	state.FFmpegProgress = clampFFMpegProgress(pct)
 	persistVideoTaskState(taskRef, state)
 }
 

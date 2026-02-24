@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/ent"
@@ -155,8 +156,17 @@ func (t *InMemoryTask) OnStatusTransition(newStatus task.Status) {
 type DBTask struct {
 	DirectOwner *ent.User
 	Task        *ent.Task
+	canceled    atomic.Bool
 
 	mu sync.Mutex
+}
+
+func (t *DBTask) SetCanceled() {
+	t.canceled.Store(true)
+}
+
+func (t *DBTask) IsCanceled() bool {
+	return t.canceled.Load()
 }
 
 func (t *DBTask) ID() int {

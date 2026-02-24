@@ -569,6 +569,11 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				middleware.HashID(hashid.TaskID),
 				controllers.GetTaskPhaseProgress,
 			)
+			wf.DELETE("video/:id",
+				middleware.RequiredScopes(types.ScopeWorkflowWrite),
+				middleware.HashID(hashid.TaskID),
+				controllers.CancelVideoTask,
+			)
 			// Create task to create an archive file
 			wf.POST("archive",
 				middleware.RequiredScopes(types.ScopeWorkflowWrite),

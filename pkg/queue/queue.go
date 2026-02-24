@@ -245,6 +245,11 @@ func (q *queue) work(t Task) {
 		q.schedule()
 	}()
 
+	if canceledTask, ok := t.(interface{ IsCanceled() bool }); ok && canceledTask.IsCanceled() {
+		_ = q.transitStatus(ctx, t, task.StatusCanceled)
+		return
+	}
+
 	err = q.transitStatus(ctx, t, task.StatusProcessing)
 	if err != nil {
 		l.Error("failed to transit task %d to processing: %s", t.ID(), err.Error())
@@ -283,6 +288,9 @@ func (q *queue) run(ctx context.Context, t Task) (task.Status, error) {
 	panicChan := make(chan interface{}, 1)
 	startTime := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, q.maxTaskExecution-t.Executed())
+	if q.registry != nil {
+		q.registry.SetCancel(t.ID(), cancel)
+	}
 	defer func() {
 		cancel()
 	}()
@@ -328,7 +336,10 @@ func (q *queue) run(ctx context.Context, t Task) (task.Status, error) {
 	select {
 	case p := <-panicChan:
 		panic(p)
-	case <-ctx.Done(): // timeout reached
+	case <-ctx.Done():
+		if canceled, ok := t.(interface{ IsCanceled() bool }); ok && canceled.IsCanceled() {
+			return task.StatusCanceled, nil
+		}
 		return task.StatusError, ctx.Err()
 	case <-q.quit: // shutdown service
 		// cancel job

@@ -413,6 +413,85 @@ func CancelDownloadTask(c *gin.Context, taskID int) error {
 	return nil
 }
 
+func CancelVideoTask(c *gin.Context, taskID int) error {
+	dep := dependency.FromContext(c)
+	u := inventory.UserFromContext(c)
+	if u == nil {
+		return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+	}
+
+	r := dep.TaskRegistry()
+	if t, found := r.Get(taskID); found {
+		if t.Owner().ID != u.ID {
+			return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+		}
+
+		switch t.(type) {
+		case *queue.VideoSubtitleBurnTask, *queue.VideoHLSSliceTask:
+		default:
+			return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+		}
+
+		if t.Status() == task.StatusQueued {
+			if setter, ok := t.(interface{ SetCanceled() }); ok {
+				setter.SetCanceled()
+			}
+
+			model, err := dep.TaskClient().GetTaskByID(c, taskID)
+			if err != nil {
+				return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+			}
+			if model.UserTasks != u.ID {
+				return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+			}
+			if model.Type != queue.VideoSubtitleBurnTaskType && model.Type != queue.VideoHLSSliceTaskType {
+				return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+			}
+			if model.Status != task.StatusQueued {
+				return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+			}
+
+			args := &inventory.TaskArgs{Status: task.StatusCanceled, PublicState: model.PublicState, PrivateState: model.PrivateState}
+			if args.PublicState == nil {
+				args.PublicState = &types.TaskPublicState{}
+			}
+			if _, err := dep.TaskClient().Update(c, model, args); err != nil {
+				return serializer.NewError(serializer.CodeDBError, "Failed to cancel task", err)
+			}
+			return nil
+		}
+
+		if !r.Cancel(taskID) {
+			return serializer.NewError(serializer.CodeNotFound, "Task not cancelable", nil)
+		}
+		return nil
+	}
+
+	model, err := dep.TaskClient().GetTaskByID(c, taskID)
+	if err != nil {
+		return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+	}
+	if model.UserTasks != u.ID {
+		return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+	}
+	if model.Type != queue.VideoSubtitleBurnTaskType && model.Type != queue.VideoHLSSliceTaskType {
+		return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+	}
+	if model.Status != task.StatusQueued {
+		return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+	}
+
+	args := &inventory.TaskArgs{Status: task.StatusCanceled, PublicState: model.PublicState, PrivateState: model.PrivateState}
+	if args.PublicState == nil {
+		args.PublicState = &types.TaskPublicState{}
+	}
+	if _, err := dep.TaskClient().Update(c, model, args); err != nil {
+		return serializer.NewError(serializer.CodeDBError, "Failed to cancel task", err)
+	}
+
+	return nil
+}
+
 type (
 	SetDownloadFilesService struct {
 		Files []*downloader.SetFileToDownloadArgs `json:"files" binding:"required"`

@@ -685,7 +685,7 @@ func (d *dependency) VideoProcessQueue(ctx context.Context) queue.Queue {
 		t = d.TaskClient()
 	}
 
-	d.videoProcessQueue = queue.New(d.Logger(), t, nil, d,
+	d.videoProcessQueue = queue.New(d.Logger(), t, d.TaskRegistry(), d,
 		queue.WithWorkerCount(workerNum),
 		queue.WithName("VideoProcessQueue"),
 		queue.WithResumeTaskType(queue.VideoSubtitleBurnTaskType, queue.VideoHLSSliceTaskType),
