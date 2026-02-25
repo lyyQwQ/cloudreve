@@ -272,7 +272,7 @@ func (t *VideoHLSSliceTask) Do(ctx context.Context) (task.Status, error) {
 		return task.StatusError, wrapVideoTaskErr(err)
 	}
 
-	vCodec, aCodec, hasAudio, probeStderr, err := probeVideoCodecs(ctx, input)
+	vCodec, aCodec, aChannels, hasAudio, probeStderr, err := probeVideoCodecs(ctx, input)
 	if err != nil {
 		logger.Error("Video hls precheck failed task_type=%s file_id=%d stderr=%s err=%v", t.Type(), state.FileID, probeStderr, err)
 		return task.StatusError, wrapVideoTaskErr(err)
@@ -291,7 +291,7 @@ func (t *VideoHLSSliceTask) Do(ctx context.Context) (task.Status, error) {
 
 	playlistPath := filepath.Join(outputDir, "index.m3u8")
 	segmentPattern := filepath.Join(outputDir, "segment_%05d.ts")
-	ffmpegStderr, err := runHLSFFMpeg(ctx, input, playlistPath, segmentPattern, aCodec, hasAudio)
+	ffmpegStderr, err := runHLSFFMpeg(ctx, input, playlistPath, segmentPattern, aCodec, aChannels, hasAudio)
 	if err != nil {
 		logger.Error("Video hls ffmpeg failed task_type=%s file_id=%d stderr=%s err=%v", t.Type(), state.FileID, ffmpegStderr, err)
 		return task.StatusError, wrapVideoTaskErr(err)
@@ -463,6 +463,7 @@ type ffprobeCodecPayload struct {
 		CodecType string            `json:"codec_type"`
 		CodecName string            `json:"codec_name"`
 		BitRate   string            `json:"bit_rate"`
+		Channels  int               `json:"channels"`
 		Height    int               `json:"height"`
 		Tags      map[string]string `json:"tags"`
 	} `json:"streams"`
@@ -583,14 +584,15 @@ func resolveVideoTaskInput(ctx context.Context, dep videoTaskDep, fileID int) (*
 	return fileModel, primary.Source, nil
 }
 
-func probeVideoCodecs(ctx context.Context, input string) (string, string, bool, string, error) {
+func probeVideoCodecs(ctx context.Context, input string) (string, string, int, bool, string, error) {
 	payload, stderrText, err := runVideoFFProbe(ctx, input)
 	if err != nil {
-		return "", "", false, stderrText, err
+		return "", "", 0, false, stderrText, err
 	}
 
 	var videoCodec string
 	var audioCodec string
+	var audioChannels int
 	hasAudio := false
 	for _, stream := range payload.Streams {
 		switch strings.ToLower(strings.TrimSpace(stream.CodecType)) {
@@ -602,11 +604,12 @@ func probeVideoCodecs(ctx context.Context, input string) (string, string, bool, 
 			hasAudio = true
 			if audioCodec == "" {
 				audioCodec = strings.TrimSpace(stream.CodecName)
+				audioChannels = stream.Channels
 			}
 		}
 	}
 
-	return videoCodec, audioCodec, hasAudio, stderrText, nil
+	return videoCodec, audioCodec, audioChannels, hasAudio, stderrText, nil
 }
 
 func probeVideoHeight(ctx context.Context, input string) (int, *ffprobeCodecPayload, string, error) {
@@ -904,19 +907,25 @@ func copyLocalFile(src, dst string) error {
 	return dstHandle.Sync()
 }
 
-func runHLSFFMpeg(ctx context.Context, input, playlistPath, segmentPattern, audioCodec string, hasAudio bool) (string, error) {
+func runHLSFFMpeg(ctx context.Context, input, playlistPath, segmentPattern, audioCodec string, audioChannels int, hasAudio bool) (string, error) {
 	args := []string{
 		"-v", "warning",
 		"-y",
 		"-i", input,
+		"-map", "0:v:0",
 		"-c:v", "copy",
 	}
 
 	if hasAudio {
-		if strings.EqualFold(audioCodec, "aac") {
+		args = append(args, "-map", "0:a:0?")
+		if strings.EqualFold(audioCodec, "aac") && (audioChannels == 0 || audioChannels <= 2) {
 			args = append(args, "-c:a", "copy")
 		} else {
-			args = append(args, "-c:a", "aac")
+			args = append(args,
+				"-c:a", "aac",
+				"-ac", "2",
+				"-ar", "48000",
+			)
 		}
 	} else {
 		args = append(args, "-an")

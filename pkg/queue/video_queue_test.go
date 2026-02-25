@@ -464,6 +464,48 @@ func TestVideoHLSSliceTask_DoTranscodesNonAACAudio(t *testing.T) {
 	if !strings.Contains(args, "-c:v copy") || !strings.Contains(args, "-c:a aac") {
 		t.Fatalf("expected transcode audio args, got %q", args)
 	}
+	for _, expected := range []string{"-ac 2", "-ar 48000"} {
+		if !strings.Contains(args, expected) {
+			t.Fatalf("expected ffmpeg args to contain %q, got %q", expected, args)
+		}
+	}
+}
+
+func TestVideoHLSSliceTask_DoTranscodesMultichannelAACToStereo(t *testing.T) {
+	dep, user, fileID := newVideoTaskTestFixture(t)
+
+	binDir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFProbe(t, binDir, `{"streams":[{"codec_type":"video","codec_name":"h264"},{"codec_type":"audio","codec_name":"aac","channels":6}]}`, "", 0)
+	prepareFakeFFMpegSuccess(t, binDir, argsFile)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tk, err := NewVideoHLSSliceTask(context.Background(), fileID, user)
+	if err != nil {
+		t.Fatalf("NewVideoHLSSliceTask: %v", err)
+	}
+
+	status, err := tk.Do(newVideoTaskCtx(dep))
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if status != task.StatusCompleted {
+		t.Fatalf("expected completed, got %q", status)
+	}
+
+	argsRaw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read ffmpeg args: %v", err)
+	}
+	args := string(bytes.TrimSpace(argsRaw))
+	for _, expected := range []string{"-c:v copy", "-c:a aac", "-ac 2", "-ar 48000"} {
+		if !strings.Contains(args, expected) {
+			t.Fatalf("expected ffmpeg args to contain %q, got %q", expected, args)
+		}
+	}
+	if strings.Contains(args, "-c:a copy") {
+		t.Fatalf("expected multichannel AAC to be transcoded, got %q", args)
+	}
 }
 
 func TestVideoHLSSliceTask_DoAllowsNoAudio(t *testing.T) {
@@ -873,7 +915,7 @@ func TestRunHLSFFMpeg_InjectsThreadsAndUsesNiceWhenAvailable(t *testing.T) {
 
 	playlist := filepath.Join(t.TempDir(), "index.m3u8")
 	pattern := filepath.Join(t.TempDir(), "segment_%05d.ts")
-	if _, err := runHLSFFMpeg(newVideoTaskCtx(dep), "input.mp4", playlist, pattern, "aac", true); err != nil {
+	if _, err := runHLSFFMpeg(newVideoTaskCtx(dep), "input.mp4", playlist, pattern, "aac", 2, true); err != nil {
 		t.Fatalf("runHLSFFMpeg: %v", err)
 	}
 
