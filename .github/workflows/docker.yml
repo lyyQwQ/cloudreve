@@ -28,7 +28,11 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=0.0.0-dev.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            backend_version=$(awk -F'"' '/^var BackendVersion = /{print $2; exit}' application/constants/constants.go)
+            if [[ -z "$backend_version" ]]; then
+              backend_version="4.14.0"
+            fi
+            echo "version=${backend_version}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Docker Buildx
