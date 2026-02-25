@@ -70,7 +70,7 @@ type DirectLinkResponse struct {
 	HLSUrl  string `json:"hls_url,omitempty"`
 }
 
-func BuildDirectLinkResponse(links []manager.DirectLink) []DirectLinkResponse {
+func BuildDirectLinkResponse(siteURL *url.URL, links []manager.DirectLink) []DirectLinkResponse {
 	if len(links) == 0 {
 		return nil
 	}
@@ -80,7 +80,7 @@ func BuildDirectLinkResponse(links []manager.DirectLink) []DirectLinkResponse {
 		hlsURL := ""
 		if md := link.File.Metadata(); md != nil {
 			if strings.TrimSpace(md["hls:available"]) == "1" {
-				hlsURL = fmt.Sprintf("/api/v4/hls/%d/play/index.m3u8", link.File.ID())
+				hlsURL = buildHLSIndexURL(siteURL, link.File.ID())
 			}
 		}
 
@@ -91,6 +91,20 @@ func BuildDirectLinkResponse(links []manager.DirectLink) []DirectLinkResponse {
 		})
 	}
 	return res
+}
+
+func buildHLSIndexURL(siteURL *url.URL, fileID int) string {
+	relative := fmt.Sprintf("/api/v4/hls/%d/play/index.m3u8", fileID)
+	if siteURL == nil {
+		return relative
+	}
+
+	route, err := url.Parse(relative)
+	if err != nil {
+		return relative
+	}
+
+	return siteURL.ResolveReference(route).String()
 }
 
 const PathMyRedacted = "redacted"

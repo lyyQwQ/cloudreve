@@ -628,7 +628,7 @@ var DefaultSettings = map[string]string{
 	"queue_video_process_worker_num":             "1",
 	"video_ffmpeg_threads":                       "1",
 	"video_ffmpeg_nice":                          "10",
-	"entity_url_default_ttl":                     "3600",
+	"entity_url_default_ttl":                     "86400",
 	"entity_url_cache_margin":                    "600",
 	"media_meta":                                 "1",
 	"media_meta_exif":                            "1",

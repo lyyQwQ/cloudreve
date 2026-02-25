@@ -117,7 +117,7 @@ func (s *GetDirectLinkService) Get(c *gin.Context) ([]DirectLinkResponse, error)
 	}
 
 	res, err := m.GetDirectLink(c, uris...)
-	return BuildDirectLinkResponse(res), err
+	return BuildDirectLinkResponse(dep.SettingProvider().SiteURL(setting.UseFirstSiteUrl(c)), res), err
 }
 
 func DeleteDirectLink(c *gin.Context) error {

@@ -607,7 +607,7 @@ func (s *settingProvider) EntityUrlCacheMargin(ctx context.Context) int {
 }
 
 func (s *settingProvider) EntityUrlValidDuration(ctx context.Context) time.Duration {
-	return time.Duration(s.getInt(ctx, "entity_url_default_ttl", 3600)) * time.Second
+	return time.Duration(s.getInt(ctx, "entity_url_default_ttl", 86400)) * time.Second
 }
 
 func (s *settingProvider) EventHubMaxOfflineDuration(ctx context.Context) time.Duration {
