@@ -387,7 +387,19 @@ func createVideoFileFixture(t *testing.T, client *ent.Client, userID int) int {
 func createHLSArtifactFixture(t *testing.T, client *ent.Client, fileID int, playlist string, segments map[string]string) {
 	t.Helper()
 
-	dir := t.TempDir()
+	base := filepath.Join(os.TempDir(), "cloudreve-hls")
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatalf("create hls base dir: %v", err)
+	}
+
+	dir, err := os.MkdirTemp(base, "test-*")
+	if err != nil {
+		t.Fatalf("create hls artifact dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+
 	if err := os.WriteFile(filepath.Join(dir, "index.m3u8"), []byte(playlist), 0600); err != nil {
 		t.Fatalf("write playlist: %v", err)
 	}

@@ -975,7 +975,7 @@ func TestRunSubtitleBurnFFMpeg_DisablesThreadsAndNiceWhenZero(t *testing.T) {
 	prepareFakeFFMpegCapture(t, binDir, ffmpegArgsFile)
 	t.Setenv("PATH", binDir)
 
-	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4"), 0, nil); err != nil {
+	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4"), 0, 0, nil); err != nil {
 		t.Fatalf("runSubtitleBurnFFMpeg: %v", err)
 	}
 
@@ -990,6 +990,9 @@ func TestRunSubtitleBurnFFMpeg_DisablesThreadsAndNiceWhenZero(t *testing.T) {
 	if !strings.Contains(ffmpegArgs, "-vf subtitles=test.srt") {
 		t.Fatalf("expected subtitle filter arg, got %q", ffmpegArgs)
 	}
+	if !strings.Contains(ffmpegArgs, "-crf 18") || !strings.Contains(ffmpegArgs, "-preset medium") {
+		t.Fatalf("expected hardcoded quality args, got %q", ffmpegArgs)
+	}
 }
 
 func TestRunSubtitleBurnFFMpeg_FallbackToFFMpegWhenNiceUnavailable(t *testing.T) {
@@ -1001,7 +1004,7 @@ func TestRunSubtitleBurnFFMpeg_FallbackToFFMpegWhenNiceUnavailable(t *testing.T)
 	prepareFakeFFMpegCapture(t, binDir, ffmpegArgsFile)
 	t.Setenv("PATH", binDir)
 
-	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4"), 0, nil); err != nil {
+	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4"), 0, 0, nil); err != nil {
 		t.Fatalf("runSubtitleBurnFFMpeg: %v", err)
 	}
 
@@ -1010,4 +1013,30 @@ func TestRunSubtitleBurnFFMpeg_FallbackToFFMpegWhenNiceUnavailable(t *testing.T)
 		t.Fatalf("read ffmpeg args: %v", err)
 	}
 	assertThreadsBeforeInput(t, strings.TrimSpace(string(ffmpegArgsRaw)), 2)
+}
+
+func TestRunSubtitleBurnFFMpeg_AppendsVBVArgsWhenBitrateProvided(t *testing.T) {
+	dep, _, _ := newVideoTaskTestFixture(t)
+	setVideoFFMpegRuntimeOptions(t, dep, 0, 0)
+
+	binDir := t.TempDir()
+	ffmpegArgsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFMpegCapture(t, binDir, ffmpegArgsFile)
+	t.Setenv("PATH", binDir)
+
+	if _, err := runSubtitleBurnFFMpeg(newVideoTaskCtx(dep), "input.mp4", "subtitles=test.srt", filepath.Join(t.TempDir(), "output.mp4"), 0, 2_000_000, nil); err != nil {
+		t.Fatalf("runSubtitleBurnFFMpeg: %v", err)
+	}
+
+	ffmpegArgsRaw, err := os.ReadFile(ffmpegArgsFile)
+	if err != nil {
+		t.Fatalf("read ffmpeg args: %v", err)
+	}
+	ffmpegArgs := strings.TrimSpace(string(ffmpegArgsRaw))
+	if !strings.Contains(ffmpegArgs, "-maxrate 2000000") {
+		t.Fatalf("expected -maxrate to be injected, args=%q", ffmpegArgs)
+	}
+	if !strings.Contains(ffmpegArgs, "-bufsize 4000000") {
+		t.Fatalf("expected -bufsize to be injected, args=%q", ffmpegArgs)
+	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/pkg/conf"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
+	"github.com/cloudreve/Cloudreve/v4/pkg/util"
 	"github.com/gofrs/uuid"
 	"github.com/samber/lo"
 	"golang.org/x/tools/container/intsets"
@@ -586,7 +587,10 @@ func cascadeDeleteHLSArtifacts(ctx context.Context, client *ent.Client, fileIDs 
 
 	hardDeleteCtx := schema.SkipSoftDelete(ctx)
 
-	allowedPrefix := filepath.Clean(filepath.Join(os.TempDir(), hlsArtifactTempDirName)) + string(os.PathSeparator)
+	allowedPrefixes := []string{
+		filepath.Clean(util.DataPath("hls")),
+		filepath.Clean(filepath.Join(os.TempDir(), hlsArtifactTempDirName)),
+	}
 	var cascadeErr error
 	artifacts, err := client.HLSArtifact.Query().Where(hlsartifact.SourceFileIDIn(fileIDs...)).All(hardDeleteCtx)
 	if err != nil {
@@ -603,9 +607,16 @@ func cascadeDeleteHLSArtifacts(ctx context.Context, client *ent.Client, fileIDs 
 				}
 				continue
 			}
-			if !strings.HasPrefix(storagePath, allowedPrefix) {
+			allowed := false
+			for _, prefix := range allowedPrefixes {
+				if storagePath == prefix || strings.HasPrefix(storagePath, prefix+string(os.PathSeparator)) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
 				if cascadeErr == nil {
-					cascadeErr = fmt.Errorf("hls artifact dir %q escapes allowed prefix %q", storagePath, allowedPrefix)
+					cascadeErr = fmt.Errorf("hls artifact dir %q escapes allowed prefixes %v", storagePath, allowedPrefixes)
 				}
 				continue
 			}

@@ -24,12 +24,14 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/ent/node"
-	"github.com/cloudreve/Cloudreve/v4/ent/setting"
+	entsetting "github.com/cloudreve/Cloudreve/v4/ent/setting"
 	"github.com/cloudreve/Cloudreve/v4/ent/task"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
+	settingpkg "github.com/cloudreve/Cloudreve/v4/pkg/setting"
+	"github.com/cloudreve/Cloudreve/v4/pkg/util"
 )
 
 var ErrUnsupportedCodec = errors.New("unsupported codec")
@@ -51,6 +53,9 @@ const (
 	videoFFMpegNiceSettingName    = "video_ffmpeg_nice"
 	videoFFMpegThreadsDefault     = 1
 	videoFFMpegNiceDefault        = 10
+
+	tempPathSettingName    = "temp_path"
+	tempPathSettingDefault = "temp"
 
 	subtitleStyle1080p        = "FontSize=22,MarginV=28,Outline=0.3,Shadow=1"
 	subtitleStyle720p         = "FontSize=18,MarginV=20,Outline=0.3,Shadow=1"
@@ -213,7 +218,7 @@ func (t *VideoSubtitleBurnTask) Do(ctx context.Context) (task.Status, error) {
 
 	t.updateProgress(2, 4)
 
-	outputPath := buildSubtitleBurnOutputPath(state.FileID)
+	outputPath := buildSubtitleBurnOutputPath(ctx, state.FileID)
 	state.OutputPath = outputPath
 	t.persistState(state)
 
@@ -223,7 +228,8 @@ func (t *VideoSubtitleBurnTask) Do(ctx context.Context) (task.Status, error) {
 	if state.Duration <= 0 {
 		onProgress = nil
 	}
-	ffmpegStderr, err := runSubtitleBurnFFMpeg(ctx, input, filterArg, outputPath, state.Duration, onProgress)
+	bitrate := resolveBitrate(probePayload)
+	ffmpegStderr, err := runSubtitleBurnFFMpeg(ctx, input, filterArg, outputPath, state.Duration, bitrate, onProgress)
 	if err != nil {
 		logger.Error("Video subtitle ffmpeg failed task_type=%s file_id=%d mode=%s stderr=%s err=%v", t.Type(), state.FileID, modeUsed, ffmpegStderr, err)
 		return task.StatusError, wrapVideoTaskErr(err)
@@ -372,8 +378,6 @@ func (t *VideoSubtitleBurnTask) Summarize(_ hashid.Encoder) *Summary {
 }
 
 func (t *VideoSubtitleBurnTask) Cleanup(ctx context.Context) error {
-	_ = ctx
-
 	state, err := ParseVideoTaskState(t.State())
 	if err != nil {
 		return nil
@@ -385,8 +389,9 @@ func (t *VideoSubtitleBurnTask) Cleanup(ctx context.Context) error {
 	}
 
 	cleaned := filepath.Clean(outputPath)
-	allowedPrefix := filepath.Clean(filepath.Join(os.TempDir(), "cloudreve-subtitle-burn"))
-	if !strings.HasPrefix(cleaned, allowedPrefix+string(os.PathSeparator)) {
+	allowedPrefixNew := filepath.Clean(util.DataPath(filepath.Join(loadTempPathSetting(ctx), "subtitle-burn")))
+	allowedPrefixOld := filepath.Clean(filepath.Join(os.TempDir(), "cloudreve-subtitle-burn"))
+	if !strings.HasPrefix(cleaned, allowedPrefixNew+string(os.PathSeparator)) && !strings.HasPrefix(cleaned, allowedPrefixOld+string(os.PathSeparator)) {
 		return nil
 	}
 
@@ -402,8 +407,6 @@ func (t *VideoHLSSliceTask) Progress(_ context.Context) Progresses {
 }
 
 func (t *VideoHLSSliceTask) Cleanup(ctx context.Context) error {
-	_ = ctx
-
 	state, err := ParseVideoTaskState(t.State())
 	if err != nil {
 		return nil
@@ -415,8 +418,16 @@ func (t *VideoHLSSliceTask) Cleanup(ctx context.Context) error {
 	}
 
 	cleaned := filepath.Clean(outputDir)
-	tmpDir := filepath.Clean(os.TempDir())
-	if !strings.HasPrefix(cleaned, tmpDir+string(os.PathSeparator)) {
+	if shouldSkipHLSCleanupForPersistedArtifact(ctx, state.FileID, cleaned) {
+		return nil
+	}
+
+	allowedPrefixNew := filepath.Clean(util.DataPath("hls"))
+	allowedPrefixOld := filepath.Clean(filepath.Join(os.TempDir(), "cloudreve-hls"))
+	if cleaned == allowedPrefixNew || cleaned == allowedPrefixOld {
+		return nil
+	}
+	if !strings.HasPrefix(cleaned, allowedPrefixNew+string(os.PathSeparator)) && !strings.HasPrefix(cleaned, allowedPrefixOld+string(os.PathSeparator)) {
 		return nil
 	}
 
@@ -425,6 +436,20 @@ func (t *VideoHLSSliceTask) Cleanup(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func shouldSkipHLSCleanupForPersistedArtifact(ctx context.Context, fileID int, outputDir string) bool {
+	dep, err := resolveVideoTaskDep(ctx)
+	if err != nil {
+		return false
+	}
+
+	artifact, err := dep.DBClient().HLSArtifact.Query().Where(hlsartifact.SourceFileID(fileID)).Only(ctx)
+	if err != nil {
+		return false
+	}
+
+	return filepath.Clean(strings.TrimSpace(artifact.StoragePath)) == outputDir
 }
 
 type videoTaskDep interface {
@@ -437,12 +462,72 @@ type ffprobeCodecPayload struct {
 		Index     int               `json:"index"`
 		CodecType string            `json:"codec_type"`
 		CodecName string            `json:"codec_name"`
+		BitRate   string            `json:"bit_rate"`
 		Height    int               `json:"height"`
 		Tags      map[string]string `json:"tags"`
 	} `json:"streams"`
 	Format struct {
 		Duration string `json:"duration"`
+		BitRate  string `json:"bit_rate"`
+		Size     string `json:"size"`
 	} `json:"format"`
+}
+
+func resolveBitrate(payload *ffprobeCodecPayload) int {
+	defaultByHeight := func(height int) int {
+		switch {
+		case height >= 1080:
+			return 5_000_000
+		case height >= 720:
+			return 2_500_000
+		case height >= 480:
+			return 1_000_000
+		default:
+			return 500_000
+		}
+	}
+
+	if payload == nil {
+		return defaultByHeight(720)
+	}
+
+	height := 0
+	for _, stream := range payload.Streams {
+		if !strings.EqualFold(strings.TrimSpace(stream.CodecType), "video") {
+			continue
+		}
+
+		height = stream.Height
+		raw := strings.TrimSpace(stream.BitRate)
+		if raw != "" && !strings.EqualFold(raw, "N/A") {
+			if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+				return v
+			}
+		}
+		break
+	}
+
+	rawFormatBitrate := strings.TrimSpace(payload.Format.BitRate)
+	if rawFormatBitrate != "" && !strings.EqualFold(rawFormatBitrate, "N/A") {
+		if v, err := strconv.Atoi(rawFormatBitrate); err == nil && v > 0 {
+			return v
+		}
+	}
+
+	rawSize := strings.TrimSpace(payload.Format.Size)
+	rawDuration := strings.TrimSpace(payload.Format.Duration)
+	if rawSize != "" && rawDuration != "" && !strings.EqualFold(rawSize, "N/A") && !strings.EqualFold(rawDuration, "N/A") {
+		if sizeBytes, err := strconv.ParseInt(rawSize, 10, 64); err == nil && sizeBytes > 0 {
+			if dur, err := strconv.ParseFloat(rawDuration, 64); err == nil && dur > 0 {
+				bps := int(float64(sizeBytes) * 8 / dur)
+				if bps > 0 {
+					return bps
+				}
+			}
+		}
+	}
+
+	return defaultByHeight(height)
 }
 
 func resolveVideoTaskDep(ctx context.Context) (videoTaskDep, error) {
@@ -543,11 +628,12 @@ func probeVideoHeight(ctx context.Context, input string) (int, *ffprobeCodecPayl
 }
 
 func buildHLSOutputDir(fileID int) string {
-	return filepath.Join(os.TempDir(), "cloudreve-hls", strconv.Itoa(fileID), strconv.FormatInt(time.Now().UnixNano(), 10))
+	return filepath.Join(util.DataPath("hls"), strconv.Itoa(fileID), strconv.FormatInt(time.Now().UnixNano(), 10))
 }
 
-func buildSubtitleBurnOutputPath(fileID int) string {
-	return filepath.Join(os.TempDir(), "cloudreve-subtitle-burn", strconv.Itoa(fileID), fmt.Sprintf("burned_%d.mp4", time.Now().UnixNano()))
+func buildSubtitleBurnOutputPath(ctx context.Context, fileID int) string {
+	base := util.DataPath(filepath.Join(loadTempPathSetting(ctx), "subtitle-burn"))
+	return filepath.Join(base, strconv.Itoa(fileID), fmt.Sprintf("burned_%d.mp4", time.Now().UnixNano()))
 }
 
 func persistBurnedOutput(ctx context.Context, taskRef *VideoSubtitleBurnTask, fileModel *ent.File, outputPath, lang string) error {
@@ -917,7 +1003,7 @@ func runVideoFFProbe(ctx context.Context, input string) (*ffprobeCodecPayload, s
 	return &payload, stderrText, nil
 }
 
-func runSubtitleBurnFFMpeg(ctx context.Context, input, filterArg, output string, duration float64, onProgress func(float64)) (string, error) {
+func runSubtitleBurnFFMpeg(ctx context.Context, input, filterArg, output string, duration float64, bitrate int, onProgress func(float64)) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(output), 0755); err != nil {
 		return "", fmt.Errorf("failed to create subtitle output dir: %w", err)
 	}
@@ -928,11 +1014,24 @@ func runSubtitleBurnFFMpeg(ctx context.Context, input, filterArg, output string,
 		"-i", input,
 		"-vf", filterArg,
 		"-c:v", "libx264",
+		"-crf", "18",
+		"-preset", "medium",
+	}
+
+	if bitrate > 0 {
+		bufsize := bitrate * 2
+		args = append(args,
+			"-maxrate", strconv.Itoa(bitrate),
+			"-bufsize", strconv.Itoa(bufsize),
+		)
+	}
+
+	args = append(args,
 		"-c:a", "copy",
 		"-nostats",
 		"-progress", "pipe:1",
 		output,
-	}
+	)
 
 	cmd := newVideoFFMpegCommand(ctx, args)
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -1128,8 +1227,33 @@ func loadVideoFFMpegRuntimeOptions(ctx context.Context) (int, int) {
 	return threads, nice
 }
 
+func loadTempPathSetting(ctx context.Context) string {
+	if dep, ok := depFromContext(ctx).(interface{ SettingProvider() settingpkg.Provider }); ok {
+		if tempPath := strings.TrimSpace(dep.SettingProvider().TempPath(ctx)); tempPath != "" {
+			return tempPath
+		}
+	}
+
+	dep, ok := depFromContext(ctx).(videoTaskDep)
+	if !ok {
+		return tempPathSettingDefault
+	}
+
+	v, err := dep.DBClient().Setting.Query().Where(entsetting.Name(tempPathSettingName)).Only(ctx)
+	if err != nil {
+		return tempPathSettingDefault
+	}
+
+	trimmed := strings.TrimSpace(v.Value)
+	if trimmed == "" {
+		return tempPathSettingDefault
+	}
+
+	return trimmed
+}
+
 func readVideoFFMpegSettingInt(ctx context.Context, dep videoTaskDep, name string, defaultValue int) int {
-	v, err := dep.DBClient().Setting.Query().Where(setting.Name(name)).Only(ctx)
+	v, err := dep.DBClient().Setting.Query().Where(entsetting.Name(name)).Only(ctx)
 	if err != nil {
 		return defaultValue
 	}

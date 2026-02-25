@@ -18,6 +18,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
+	"github.com/cloudreve/Cloudreve/v4/pkg/util"
 	"github.com/gin-gonic/gin"
 )
 
@@ -51,9 +52,15 @@ func GetStatus(c *gin.Context) {
 		return
 	}
 
+	diskAvailable := false
+	if _, err := os.Stat(filepath.Join(artifact.StoragePath, "index.m3u8")); err == nil {
+		diskAvailable = true
+	}
+
 	c.JSON(http.StatusOK, serializer.Response{Code: 0, Msg: "ok", Data: gin.H{
-		"file_id": fileID,
-		"has_hls": true,
+		"file_id":        fileID,
+		"has_hls":        true,
+		"disk_available": diskAvailable,
 		"artifact": gin.H{
 			"storage_path":  artifact.StoragePath,
 			"segment_count": artifact.SegmentCount,
@@ -85,7 +92,13 @@ func Delete(c *gin.Context) {
 		return
 	}
 
-	if err := os.RemoveAll(artifact.StoragePath); err != nil {
+	storagePath := filepath.Clean(strings.TrimSpace(artifact.StoragePath))
+	if !isAllowedHLSArtifactPath(storagePath) {
+		internalError(c, "invalid hls artifact dir", fmt.Errorf("hls artifact dir %q escapes allowed prefixes", artifact.StoragePath))
+		return
+	}
+
+	if err := os.RemoveAll(storagePath); err != nil {
 		internalError(c, "failed to remove hls artifact dir", err)
 		return
 	}
@@ -285,6 +298,25 @@ func internalError(c *gin.Context, msg string, err error) {
 func fileExists(c *gin.Context, dep dependency.Dep, fileID int) bool {
 	_, err := dep.DBClient().File.Get(c, fileID)
 	return err == nil
+}
+
+func isAllowedHLSArtifactPath(storagePath string) bool {
+	if storagePath == "" || storagePath == "." || storagePath == string(os.PathSeparator) || !filepath.IsAbs(storagePath) {
+		return false
+	}
+
+	allowedPrefixes := []string{
+		filepath.Clean(util.DataPath("hls")),
+		filepath.Clean(filepath.Join(os.TempDir(), "cloudreve-hls")),
+	}
+
+	for _, prefix := range allowedPrefixes {
+		if storagePath == prefix || strings.HasPrefix(storagePath, prefix+string(os.PathSeparator)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func legacyStubResponse(c *gin.Context) {

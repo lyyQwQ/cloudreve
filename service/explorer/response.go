@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
@@ -66,6 +67,7 @@ type PutRelativeResponse struct {
 type DirectLinkResponse struct {
 	Link    string `json:"link"`
 	FileUrl string `json:"file_url"`
+	HLSUrl  string `json:"hls_url,omitempty"`
 }
 
 func BuildDirectLinkResponse(links []manager.DirectLink) []DirectLinkResponse {
@@ -75,9 +77,17 @@ func BuildDirectLinkResponse(links []manager.DirectLink) []DirectLinkResponse {
 
 	var res []DirectLinkResponse
 	for _, link := range links {
+		hlsURL := ""
+		if md := link.File.Metadata(); md != nil {
+			if strings.TrimSpace(md["hls:available"]) == "1" {
+				hlsURL = fmt.Sprintf("/api/v4/hls/%d/play/index.m3u8", link.File.ID())
+			}
+		}
+
 		res = append(res, DirectLinkResponse{
 			Link:    link.Url,
 			FileUrl: link.File.Uri(false).String(),
+			HLSUrl:  hlsURL,
 		})
 	}
 	return res
