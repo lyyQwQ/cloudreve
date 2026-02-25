@@ -68,6 +68,7 @@ func (m *manager) GetDirectLink(ctx context.Context, urls ...*fs.URI) ([]DirectL
 		file, err := m.fs.Get(
 			ctx, url,
 			dbfs.WithFileEntities(),
+			dbfs.WithFilePublicMetadata(),
 			dbfs.WithRequiredCapabilities(dbfs.NavigatorCapabilityDownloadFile),
 		)
 		if err != nil {
