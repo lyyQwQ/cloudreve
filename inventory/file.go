@@ -3,9 +3,6 @@ package inventory
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"entgo.io/ent/dialect/sql"
@@ -13,7 +10,6 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/directlink"
 	"github.com/cloudreve/Cloudreve/v4/ent/entity"
 	"github.com/cloudreve/Cloudreve/v4/ent/file"
-	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/ent/predicate"
 	"github.com/cloudreve/Cloudreve/v4/ent/schema"
@@ -21,19 +17,15 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/conf"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
-	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
-	"github.com/cloudreve/Cloudreve/v4/pkg/util"
 	"github.com/gofrs/uuid"
 	"github.com/samber/lo"
 	"golang.org/x/tools/container/intsets"
 )
 
 const (
-	RootFolderName          = ""
-	SearchWildcard          = "*"
-	MaxMetadataLen          = 65535
-	hlsAvailableMetadataKey = "hls:available"
-	hlsArtifactTempDirName  = "cloudreve-hls"
+	RootFolderName = ""
+	SearchWildcard = "*"
+	MaxMetadataLen = 65535
 )
 
 type (
@@ -489,8 +481,11 @@ func (f *fileClient) Delete(ctx context.Context, files []*ent.File, options *typ
 	// entities stores the relation between its reference count in `files` and entity ID.
 	entities := make(map[int]int)
 	// storageReduced stores the relation between owner ID and storage reduced.
-	storageReduced := make(map[int]int64)
+	storageReduced := make(StorageDiff)
+	ownerByFileID := make(map[int]int, len(files))
 	for _, fi := range files {
+		ownerByFileID[fi.ID] = fi.OwnerID
+
 		fileEntities, err := fi.Edges.EntitiesOrErr()
 		if err != nil {
 			return nil, nil, err
@@ -559,9 +554,11 @@ func (f *fileClient) Delete(ctx context.Context, files []*ent.File, options *typ
 			return nil, nil, fmt.Errorf("failed to delete shares of files %v: %w", group, err)
 		}
 
-		if err := cascadeDeleteHLSArtifacts(ctx, f.client, chunks[i]); err != nil {
-			logging.FromContext(ctx).Warning("Failed to cascade delete HLS artifacts for files %v: %s", chunks[i], err)
+		hlsStorageReduced, err := CascadeDeleteHLSArtifacts(ctx, f.client, chunks[i], ownerByFileID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to cascade delete HLS artifacts of files %v: %w", chunks[i], err)
 		}
+		storageReduced.Merge(hlsStorageReduced)
 
 		if _, err := f.client.Metadata.Delete().Where(metadata.FileIDIn(chunks[i]...)).Exec(schema.SkipSoftDelete(ctx)); err != nil {
 			return nil, nil, fmt.Errorf("failed to delete metadata of files %v: %w", group, err)
@@ -578,65 +575,6 @@ func (f *fileClient) Delete(ctx context.Context, files []*ent.File, options *typ
 	}
 
 	return toBeRecycled, storageReduced, nil
-}
-
-func cascadeDeleteHLSArtifacts(ctx context.Context, client *ent.Client, fileIDs []int) error {
-	if len(fileIDs) == 0 {
-		return nil
-	}
-
-	hardDeleteCtx := schema.SkipSoftDelete(ctx)
-
-	allowedPrefixes := []string{
-		filepath.Clean(util.DataPath("hls")),
-		filepath.Clean(filepath.Join(os.TempDir(), hlsArtifactTempDirName)),
-	}
-	var cascadeErr error
-	artifacts, err := client.HLSArtifact.Query().Where(hlsartifact.SourceFileIDIn(fileIDs...)).All(hardDeleteCtx)
-	if err != nil {
-		cascadeErr = fmt.Errorf("failed to query hls artifacts of files %v: %w", fileIDs, err)
-	} else {
-		for _, artifact := range artifacts {
-			storagePath := filepath.Clean(strings.TrimSpace(artifact.StoragePath))
-			if storagePath == "" {
-				continue
-			}
-			if storagePath == "." || storagePath == string(os.PathSeparator) || !filepath.IsAbs(storagePath) {
-				if cascadeErr == nil {
-					cascadeErr = fmt.Errorf("invalid hls artifact dir %q", artifact.StoragePath)
-				}
-				continue
-			}
-			allowed := false
-			for _, prefix := range allowedPrefixes {
-				if storagePath == prefix || strings.HasPrefix(storagePath, prefix+string(os.PathSeparator)) {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				if cascadeErr == nil {
-					cascadeErr = fmt.Errorf("hls artifact dir %q escapes allowed prefixes %v", storagePath, allowedPrefixes)
-				}
-				continue
-			}
-			if err := os.RemoveAll(storagePath); err != nil && cascadeErr == nil {
-				cascadeErr = fmt.Errorf("failed to remove hls artifact dir %q: %w", storagePath, err)
-			}
-		}
-	}
-
-	if _, err := client.HLSArtifact.Delete().Where(hlsartifact.SourceFileIDIn(fileIDs...)).Exec(hardDeleteCtx); err != nil && cascadeErr == nil {
-		cascadeErr = fmt.Errorf("failed to delete hls artifacts of files %v: %w", fileIDs, err)
-	}
-
-	if _, err := client.Metadata.Delete().
-		Where(metadata.FileIDIn(fileIDs...), metadata.Name(hlsAvailableMetadataKey)).
-		Exec(hardDeleteCtx); err != nil && cascadeErr == nil {
-		cascadeErr = fmt.Errorf("failed to clear hls metadata of files %v: %w", fileIDs, err)
-	}
-
-	return cascadeErr
 }
 func (f *fileClient) Copy(ctx context.Context, args *CopyParameter) (map[int][]*ent.File, StorageDiff, error) {
 	files := args.Files

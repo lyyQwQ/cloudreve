@@ -305,6 +305,11 @@ func (f *DBFS) SoftDelete(ctx context.Context, path ...*fs.URI) error {
 			return serializer.NewError(serializer.CodeDBError, "failed to soft-delete file", err)
 		}
 
+		if err := inventory.ClearHLSAvailableMetadata(ctx, fc.GetClient(), target.ID()); err != nil {
+			_ = inventory.Rollback(tx)
+			return serializer.NewError(serializer.CodeDBError, "failed to clear hls metadata", err)
+		}
+
 		// Save restore uri into metadata
 		if err := fc.UpsertMetadata(ctx, target.Model, map[string]string{
 			MetadataRestoreUri: target.Uri(true).String(),

@@ -15,6 +15,8 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/enttest"
+	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
+	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
@@ -305,6 +307,121 @@ func TestHLSPlay_InvalidFileIDReturns400(t *testing.T) {
 				t.Fatalf("expected 400, got %d, body=%s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestHLSDelete_SubtractsUserStorageAndRemovesRecords(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dep, client, user := newTestDep(t)
+	defer client.Close()
+
+	fileID := createVideoFileFixture(t, client, user.ID)
+	createHLSArtifactFixture(t, client, fileID, "#EXTM3U\n#EXTINF:10,\n000.ts\n", map[string]string{
+		"000.ts": "segment-000",
+	})
+
+	ctx := context.Background()
+	artifact, err := client.HLSArtifact.Query().Where(hlsartifact.SourceFileID(fileID)).Only(ctx)
+	if err != nil {
+		t.Fatalf("query artifact: %v", err)
+	}
+
+	if _, err := client.Metadata.Create().
+		SetFileID(fileID).
+		SetName(inventory.HLSAvailableMetadataKey).
+		SetValue(inventory.HLSAvailableMetadataValue).
+		SetIsPublic(true).
+		Save(ctx); err != nil {
+		t.Fatalf("create metadata: %v", err)
+	}
+
+	initialStorage := artifact.TotalSize + 128
+	if _, err := client.User.UpdateOneID(user.ID).SetStorage(initialStorage).Save(ctx); err != nil {
+		t.Fatalf("seed user storage: %v", err)
+	}
+
+	r := newRouter(dep)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/v4/hls/%d", fileID), nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	if _, err := client.HLSArtifact.Query().Where(hlsartifact.SourceFileID(fileID)).Only(ctx); err == nil || !ent.IsNotFound(err) {
+		t.Fatalf("expected artifact deleted, got err=%v", err)
+	}
+
+	metaCount, err := client.Metadata.Query().Where(metadata.FileID(fileID), metadata.Name(inventory.HLSAvailableMetadataKey)).Count(ctx)
+	if err != nil {
+		t.Fatalf("count metadata: %v", err)
+	}
+	if metaCount != 0 {
+		t.Fatalf("expected metadata removed, got count=%d", metaCount)
+	}
+
+	updatedUser, err := client.User.Get(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("query user: %v", err)
+	}
+	if want := initialStorage - artifact.TotalSize; updatedUser.Storage != want {
+		t.Fatalf("expected user storage=%d, got %d", want, updatedUser.Storage)
+	}
+
+	if _, err := os.Stat(artifact.StoragePath); !os.IsNotExist(err) {
+		t.Fatalf("expected artifact dir removed, stat err=%v", err)
+	}
+}
+
+func TestHLSDelete_FileNotFoundReturns404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dep, client, _ := newTestDep(t)
+	defer client.Close()
+
+	r := newRouter(dep)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v4/hls/999999", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var resp serializer.Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v, body=%s", err, w.Body.String())
+	}
+	if resp.Code != serializer.CodeNotFound {
+		t.Fatalf("expected serializer code=%d, got %d", serializer.CodeNotFound, resp.Code)
+	}
+}
+
+func TestHLSDelete_ArtifactNotFoundReturns404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dep, client, user := newTestDep(t)
+	defer client.Close()
+
+	fileID := createVideoFileFixture(t, client, user.ID)
+
+	r := newRouter(dep)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/v4/hls/%d", fileID), nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var resp serializer.Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v, body=%s", err, w.Body.String())
+	}
+	if resp.Code != serializer.CodeNotFound {
+		t.Fatalf("expected serializer code=%d, got %d", serializer.CodeNotFound, resp.Code)
 	}
 }
 

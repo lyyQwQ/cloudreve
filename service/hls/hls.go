@@ -13,17 +13,11 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
-	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
-	"github.com/cloudreve/Cloudreve/v4/ent/schema"
+	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
-	"github.com/cloudreve/Cloudreve/v4/pkg/util"
 	"github.com/gin-gonic/gin"
-)
-
-const (
-	hlsAvailableMetadataKey = "hls:available"
 )
 
 var (
@@ -78,40 +72,59 @@ func Delete(c *gin.Context) {
 	}
 
 	if !fileExists(c, dep, fileID) {
-		legacyStubResponse(c)
+		notFound(c, "source file not found")
 		return
 	}
 
-	artifact, err := dep.DBClient().HLSArtifact.Query().Where(hlsartifact.SourceFileID(fileID)).Only(c)
+	file, err := dep.DBClient().File.Get(c, fileID)
 	if err != nil {
 		if ent.IsNotFound(err) {
-			notFound(c, "hls artifact not found")
+			notFound(c, "source file not found")
 			return
 		}
-		internalError(c, "failed to query hls artifact", err)
+		internalError(c, "failed to query source file", err)
 		return
 	}
 
-	storagePath := filepath.Clean(strings.TrimSpace(artifact.StoragePath))
-	if !isAllowedHLSArtifactPath(storagePath) {
-		internalError(c, "invalid hls artifact dir", fmt.Errorf("hls artifact dir %q escapes allowed prefixes", artifact.StoragePath))
+	tx, err := dep.DBClient().Tx(c)
+	if err != nil {
+		internalError(c, "failed to create transaction", err)
 		return
 	}
 
-	if err := os.RemoveAll(storagePath); err != nil {
-		internalError(c, "failed to remove hls artifact dir", err)
-		return
-	}
-
-	if err := dep.DBClient().HLSArtifact.DeleteOneID(artifact.ID).Exec(c); err != nil {
+	storagePath, totalSize, err := inventory.DeleteHLSArtifact(c, tx.Client(), fileID)
+	if err != nil {
+		_ = tx.Rollback()
 		internalError(c, "failed to delete hls artifact", err)
 		return
 	}
 
-	if _, err := dep.DBClient().Metadata.Delete().
-		Where(metadata.FileID(fileID), metadata.Name(hlsAvailableMetadataKey)).
-		Exec(schema.SkipSoftDelete(c)); err != nil {
-		internalError(c, "failed to clear hls metadata", err)
+	if storagePath == "" {
+		_ = tx.Rollback()
+		notFound(c, "hls artifact not found")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		internalError(c, "failed to commit hls delete transaction", err)
+		return
+	}
+
+	if totalSize != 0 {
+		diff := inventory.StorageDiff{file.OwnerID: -totalSize}
+		if err := dep.UserClient().ApplyStorageDiff(c, diff); err != nil {
+			dep.Logger().Error("Failed to apply hls storage diff", "file_id", fileID, "owner_id", file.OwnerID, "diff", -totalSize, "error", err)
+		}
+	}
+
+	cleanedStoragePath := filepath.Clean(strings.TrimSpace(storagePath))
+	if !inventory.IsAllowedHLSArtifactPath(cleanedStoragePath) {
+		internalError(c, "invalid hls artifact dir", fmt.Errorf("hls artifact dir %q escapes allowed prefixes", storagePath))
+		return
+	}
+
+	if err := os.RemoveAll(cleanedStoragePath); err != nil && !os.IsNotExist(err) {
+		internalError(c, "failed to remove hls artifact dir", err)
 		return
 	}
 
@@ -298,25 +311,6 @@ func internalError(c *gin.Context, msg string, err error) {
 func fileExists(c *gin.Context, dep dependency.Dep, fileID int) bool {
 	_, err := dep.DBClient().File.Get(c, fileID)
 	return err == nil
-}
-
-func isAllowedHLSArtifactPath(storagePath string) bool {
-	if storagePath == "" || storagePath == "." || storagePath == string(os.PathSeparator) || !filepath.IsAbs(storagePath) {
-		return false
-	}
-
-	allowedPrefixes := []string{
-		filepath.Clean(util.DataPath("hls")),
-		filepath.Clean(filepath.Join(os.TempDir(), "cloudreve-hls")),
-	}
-
-	for _, prefix := range allowedPrefixes {
-		if storagePath == prefix || strings.HasPrefix(storagePath, prefix+string(os.PathSeparator)) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func legacyStubResponse(c *gin.Context) {

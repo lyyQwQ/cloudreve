@@ -259,6 +259,7 @@ func (c *userClient) CalculateStorage(ctx context.Context, uid int) (int64, erro
 			Where(file.HasOwnerWith(user.ID(uid))).
 			Where(file.Type(int(types.FileTypeFile))).
 			WithEntities().
+			WithHlsArtifact().
 			Offset(offset).
 			Limit(batchSize).
 			All(ctx)
@@ -273,6 +274,10 @@ func (c *userClient) CalculateStorage(ctx context.Context, uid int) (int64, erro
 		for _, file := range allFiles {
 			for _, entity := range file.Edges.Entities {
 				sum += entity.Size
+			}
+
+			if artifact, err := file.Edges.HlsArtifactOrErr(); err == nil && artifact != nil {
+				sum += artifact.TotalSize
 			}
 		}
 

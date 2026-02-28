@@ -176,6 +176,7 @@ func TestVideoTaskProgressShape(t *testing.T) {
 type videoTaskTestDep struct {
 	client     *ent.Client
 	fileClient inventory.FileClient
+	userClient inventory.UserClient
 }
 
 func (d *videoTaskTestDep) ForkWithLogger(ctx context.Context, l logging.Logger) context.Context {
@@ -190,6 +191,10 @@ func (d *videoTaskTestDep) FileClient() inventory.FileClient {
 
 func (d *videoTaskTestDep) DBClient() *ent.Client {
 	return d.client
+}
+
+func (d *videoTaskTestDep) UserClient() inventory.UserClient {
+	return d.userClient
 }
 
 func newVideoTaskTestFixture(t *testing.T) (*videoTaskTestDep, *ent.User, int) {
@@ -213,7 +218,11 @@ func newVideoTaskTestFixture(t *testing.T) (*videoTaskTestDep, *ent.User, int) {
 		t.Fatalf("hashid.New: %v", err)
 	}
 
-	dep := &videoTaskTestDep{client: client, fileClient: inventory.NewFileClient(client, conf.SQLiteDB, hasher)}
+	dep := &videoTaskTestDep{
+		client:     client,
+		fileClient: inventory.NewFileClient(client, conf.SQLiteDB, hasher),
+		userClient: inventory.NewUserClient(client),
+	}
 
 	policy, err := client.StoragePolicy.Create().
 		SetName("local").
@@ -420,11 +429,11 @@ func TestVideoHLSSliceTask_DoRunsFFMpegAndPersistsHLS(t *testing.T) {
 		t.Fatalf("unexpected hls artifact: %+v", artifact)
 	}
 
-	meta, err := dep.client.Metadata.Query().Where(metadata.FileID(fileID), metadata.Name(hlsAvailableMetadataKey)).Only(context.Background())
+	meta, err := dep.client.Metadata.Query().Where(metadata.FileID(fileID), metadata.Name(inventory.HLSAvailableMetadataKey)).Only(context.Background())
 	if err != nil {
 		t.Fatalf("query metadata: %v", err)
 	}
-	if meta.Value != hlsAvailableMetadataValue {
+	if meta.Value != inventory.HLSAvailableMetadataValue {
 		t.Fatalf("unexpected metadata value: %q", meta.Value)
 	}
 

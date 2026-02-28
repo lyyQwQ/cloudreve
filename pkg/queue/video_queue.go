@@ -22,7 +22,6 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/entity"
 	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
-	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/ent/node"
 	entsetting "github.com/cloudreve/Cloudreve/v4/ent/setting"
 	"github.com/cloudreve/Cloudreve/v4/ent/task"
@@ -44,10 +43,8 @@ const (
 	VideoSubtitleModeExternal = "external"
 	VideoSubtitleModeEmbedded = "embedded"
 
-	hlsAvailableMetadataKey   = "hls:available"
-	hlsAvailableMetadataValue = "1"
-	hlsCodecName              = "h264/aac"
-	SummaryKeyDst             = "dst"
+	hlsCodecName  = "h264/aac"
+	SummaryKeyDst = "dst"
 
 	videoFFMpegThreadsSettingName = "video_ffmpeg_threads"
 	videoFFMpegNiceSettingName    = "video_ffmpeg_nice"
@@ -454,6 +451,7 @@ func shouldSkipHLSCleanupForPersistedArtifact(ctx context.Context, fileID int, o
 
 type videoTaskDep interface {
 	FileClient() inventory.FileClient
+	UserClient() inventory.UserClient
 	DBClient() *ent.Client
 }
 
@@ -1542,38 +1540,43 @@ func collectHLSOutputStats(outputDir string) (int, int64, error) {
 }
 
 func persistHLSResult(ctx context.Context, dep videoTaskDep, fileModel *ent.File, outputDir string, segmentCount int, totalSize int64) error {
-	existing, err := dep.DBClient().HLSArtifact.Query().Where(hlsartifact.SourceFileID(fileModel.ID)).Only(ctx)
+	if dep == nil || fileModel == nil {
+		return fmt.Errorf("invalid hls persist argument (%w)", CriticalErr)
+	}
+
+	fc, tx, txCtx, err := inventory.WithTx(ctx, dep.FileClient())
 	if err != nil {
-		if ent.IsNotFound(err) {
-			if _, err := dep.DBClient().HLSArtifact.Create().
-				SetSourceFileID(fileModel.ID).
-				SetStoragePath(outputDir).
-				SetSegmentCount(segmentCount).
-				SetTotalSize(totalSize).
-				SetCodec(hlsCodecName).
-				Save(ctx); err != nil {
-				return fmt.Errorf("failed to create hls artifact: %w", err)
-			}
-		} else {
-			return fmt.Errorf("failed to query hls artifact: %w", err)
-		}
-	} else {
-		if _, err := dep.DBClient().HLSArtifact.UpdateOne(existing).
-			SetStoragePath(outputDir).
-			SetSegmentCount(segmentCount).
-			SetTotalSize(totalSize).
-			SetCodec(hlsCodecName).
-			Save(ctx); err != nil {
-			return fmt.Errorf("failed to update hls artifact: %w", err)
-		}
+		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 
-	if err := dep.FileClient().UpsertMetadata(ctx, fileModel, map[string]string{hlsAvailableMetadataKey: hlsAvailableMetadataValue}, nil); err != nil {
-		return fmt.Errorf("failed to persist hls metadata: %w", err)
+	oldStoragePath, storageDiff, err := inventory.UpsertHLSArtifact(
+		txCtx,
+		fc.GetClient(),
+		fileModel.ID,
+		fileModel.OwnerID,
+		outputDir,
+		segmentCount,
+		totalSize,
+		hlsCodecName,
+	)
+	if err != nil {
+		_ = inventory.Rollback(tx)
+		return err
 	}
 
-	if _, err := dep.DBClient().Metadata.Query().Where(metadata.FileID(fileModel.ID), metadata.Name(hlsAvailableMetadataKey)).Only(ctx); err != nil {
-		return fmt.Errorf("failed to verify hls metadata: %w", err)
+	if storageDiff != 0 {
+		tx.AppendStorageDiff(inventory.StorageDiff{fileModel.OwnerID: storageDiff})
+	}
+
+	if err := inventory.CommitWithStorageDiff(txCtx, tx, logging.FromContext(txCtx), dep.UserClient()); err != nil {
+		return fmt.Errorf("failed to commit hls artifact persist: %w", err)
+	}
+
+	cleanOldPath := strings.TrimSpace(oldStoragePath)
+	if cleanOldPath != "" && filepath.Clean(cleanOldPath) != filepath.Clean(strings.TrimSpace(outputDir)) {
+		if err := inventory.RemoveHLSArtifactDir(cleanOldPath); err != nil {
+			return fmt.Errorf("failed to remove old hls artifact dir %q: %w", cleanOldPath, err)
+		}
 	}
 
 	return nil

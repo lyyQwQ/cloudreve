@@ -56,6 +56,7 @@ func init() {
 		}
 	})
 	crontab.Register(setting.CronTypeTrashBinCollect, CronCollectTrashBin)
+	crontab.Register(setting.CronTypeHLSReconcile, CronReconcileHLS)
 }
 
 func NewExplicitEntityRecycleTaskFromModel(task *ent.Task) queue.Task {
@@ -344,6 +345,40 @@ func CronCollectTrashBin(ctx context.Context) {
 
 		batch++
 	}
+}
+
+func CronReconcileHLS(ctx context.Context) {
+	dep := dependency.FromContext(ctx)
+	l := dep.Logger()
+
+	dryRun := true
+	if applyRaw, err := dep.SettingClient().Get(ctx, "hls_reconcile_apply"); err == nil {
+		if apply, parseErr := strconv.ParseBool(applyRaw); parseErr == nil {
+			if apply {
+				dryRun = false
+			}
+		} else {
+			l.Warning("Invalid hls_reconcile_apply value %q, fallback to dry-run: %s", applyRaw, parseErr)
+		}
+	} else {
+		l.Warning("Failed to read hls_reconcile_apply, fallback to dry-run: %s", err)
+	}
+
+	report, err := inventory.ReconcileHLSArtifacts(ctx, dep.DBClient(), dryRun, 0)
+	if err != nil {
+		l.Error("Failed to reconcile HLS artifacts (dry_run=%t): %s", dryRun, err)
+		return
+	}
+
+	l.Info("HLS reconcile finished (dry_run=%t, missing_index=%d, orphan_found=%d, orphan_deleted=%d, reclaimable_bytes=%d, reclaimed_bytes=%d, errors=%d)",
+		dryRun,
+		report.ArtifactMissingIndex,
+		report.OrphanDirsFound,
+		report.OrphanDirsDeleted,
+		report.OrphanBytesReclaimable,
+		report.OrphanBytesReclaimed,
+		report.Errors,
+	)
 }
 
 func collectTrashBin(ctx context.Context, files []fs.File, dep dependency.Dep, l logging.Logger) {

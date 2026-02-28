@@ -206,7 +206,7 @@ func TestVideoHandlers_ExistAndStub(t *testing.T) {
 		{method: http.MethodPost, path: "/api/v4/video/subtitle/burn", body: `{"file_id":1}`, status: http.StatusOK, code: 0},
 		{method: http.MethodPost, path: "/api/v4/video/hls", body: `{"file_id":1}`, status: http.StatusNotFound, code: serializer.CodeNotFound},
 		{method: http.MethodGet, path: "/api/v4/hls/1", body: "", status: http.StatusOK, code: 0},
-		{method: http.MethodDelete, path: "/api/v4/hls/1", body: "", status: http.StatusOK, code: 0},
+		{method: http.MethodDelete, path: "/api/v4/hls/1", body: "", status: http.StatusNotFound, code: serializer.CodeNotFound},
 		{method: http.MethodGet, path: "/api/v4/hls/1/play/index.m3u8", body: "", status: http.StatusOK, code: 0},
 		{method: http.MethodGet, path: "/api/v4/hls/1/play/seg0.ts", body: "", status: http.StatusOK, code: 0},
 	} {
