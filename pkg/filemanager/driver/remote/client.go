@@ -60,7 +60,7 @@ func NewClient(ctx context.Context, policy *ent.StoragePolicy, settings setting.
 		return nil, fmt.Errorf("remote storage policy %d has no node", policy.ID)
 	}
 
-	authInstance := auth.HMACAuth{[]byte(policy.Edges.Node.SlaveKey)}
+	authInstance := auth.HMACAuth{SecretKey: []byte(policy.Edges.Node.SlaveKey)}
 	serverURL, err := url.Parse(policy.Edges.Node.Server)
 	if err != nil {
 		return nil, err
@@ -175,7 +175,7 @@ func (c *remoteClient) DeleteFiles(ctx context.Context, files ...string) ([]stri
 		var failed []string
 		failed = files
 		if resp.Code == serializer.CodeNotFullySuccess {
-			resp.GobDecode(&failed)
+			_ = resp.DecodeGob(&failed)
 		}
 		return failed, fmt.Errorf("%s", resp.Error)
 	}
@@ -200,7 +200,7 @@ func (c *remoteClient) MediaMeta(ctx context.Context, src, ext, language string)
 	}
 
 	var metas []driver.MediaMeta
-	resp.GobDecode(&metas)
+	_ = resp.DecodeGob(&metas)
 	return metas, nil
 }
 
@@ -249,7 +249,7 @@ func (c *remoteClient) List(ctx context.Context, path string, recursive bool) ([
 	}
 
 	var objects []fs.PhysicalObject
-	resp.GobDecode(&objects)
+	_ = resp.DecodeGob(&objects)
 	return objects, nil
 
 }

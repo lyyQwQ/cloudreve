@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/gob"
+	"fmt"
 )
 
 // Response 基础序列化器
@@ -28,11 +29,22 @@ func NewResponseWithGobData(c context.Context, data interface{}) Response {
 	return Response{Data: w.Bytes()}
 }
 
-// GobDecode 将 Response 正文解码至目标指针
-func (r *Response) GobDecode(target interface{}) {
-	src := r.Data.(string)
-	raw := make([]byte, len(src)*len(src)/base64.StdEncoding.DecodedLen(len(src)))
-	base64.StdEncoding.Decode(raw, []byte(src))
-	decoder := gob.NewDecoder(bytes.NewBuffer(raw))
-	decoder.Decode(target)
+// DecodeGob 将 Response 正文解码至目标指针
+func (r *Response) DecodeGob(target interface{}) error {
+	src, ok := r.Data.(string)
+	if !ok {
+		return fmt.Errorf("unexpected gob source type %T", r.Data)
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(src)
+	if err != nil {
+		return err
+	}
+
+	decoder := gob.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+
+	return nil
 }

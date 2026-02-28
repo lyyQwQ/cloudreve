@@ -269,7 +269,7 @@ func (handler *Driver) CompleteUpload(ctx context.Context, session *fs.UploadSes
 		nil,
 		request.WithTimeout(time.Duration(handler.config.Slave().CallbackTimeout)*time.Second),
 		request.WithCredential(
-			auth.HMACAuth{[]byte(session.Policy.Edges.Node.SlaveKey)},
+			auth.HMACAuth{SecretKey: []byte(session.Policy.Edges.Node.SlaveKey)},
 			int64(handler.config.Slave().SignatureTTL),
 		),
 		request.WithContext(ctx),

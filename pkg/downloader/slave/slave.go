@@ -63,7 +63,7 @@ func (s *slaveDownloader) CreateTask(ctx context.Context, url string, options ma
 	}
 
 	var taskHandle *downloader.TaskHandle
-	if resp.GobDecode(&taskHandle); taskHandle != nil {
+	if err := resp.DecodeGob(&taskHandle); err == nil && taskHandle != nil {
 		return taskHandle, nil
 	}
 
@@ -101,7 +101,7 @@ func (s *slaveDownloader) Info(ctx context.Context, handle *downloader.TaskHandl
 	}
 
 	var taskStatus *downloader.TaskStatus
-	if resp.GobDecode(&taskStatus); taskStatus != nil {
+	if err := resp.DecodeGob(&taskStatus); err == nil && taskStatus != nil {
 		return taskStatus, nil
 	}
 

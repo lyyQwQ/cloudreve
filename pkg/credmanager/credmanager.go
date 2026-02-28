@@ -167,7 +167,7 @@ func NewSlaveManager(kv cache.Driver, config conf.ConfigProvider) CredManager {
 		client: request.NewClient(
 			config,
 			request.WithCredential(auth.HMACAuth{
-				[]byte(config.Slave().Secret),
+				SecretKey: []byte(config.Slave().Secret),
 			}, int64(config.Slave().SignatureTTL)),
 		),
 	}
@@ -228,7 +228,7 @@ func (m *slaveCredManager) requestCredFromMaster(ctx context.Context, key string
 	}
 
 	cred := &CredentialResponse{}
-	resp.GobDecode(&cred)
+	_ = resp.DecodeGob(&cred)
 
 	if err := m.kv.Set(key, *cred, max(int(time.Until(cred.Expiry()).Seconds()), 1)); err != nil {
 		return nil, fmt.Errorf("failed to update credential in KV for key %q: %w", key, err)

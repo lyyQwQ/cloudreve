@@ -93,7 +93,7 @@ func newMasterNode(model *ent.Node, config conf.ConfigProvider, settings setting
 		n.client = request.NewClient(config,
 			request.WithCorrelationID(),
 			request.WithCredential(auth.HMACAuth{
-				[]byte(config.Slave().Secret),
+				SecretKey: []byte(config.Slave().Secret),
 			}, int64(config.Slave().SignatureTTL)),
 		)
 	}
@@ -126,7 +126,7 @@ func (b *masterNode) PrepareUpload(ctx context.Context, args *fs.StatelessPrepar
 	}
 
 	uploadRequest := &fs.StatelessPrepareUploadResponse{}
-	resp.GobDecode(uploadRequest)
+	_ = resp.DecodeGob(uploadRequest)
 
 	return uploadRequest, nil
 }
@@ -261,7 +261,7 @@ func newSlaveNode(ctx context.Context, model *ent.Node, config conf.ConfigProvid
 			request.WithCorrelationID(),
 			request.WithSlaveMeta(model.ID),
 			request.WithMasterMeta(siteBasic.ID, settings.SiteURL(setting.UseFirstSiteUrl(ctx)).String()),
-			request.WithCredential(auth.HMACAuth{[]byte(model.SlaveKey)}, int64(settings.SlaveRequestSignTTL(ctx))),
+			request.WithCredential(auth.HMACAuth{SecretKey: []byte(model.SlaveKey)}, int64(settings.SlaveRequestSignTTL(ctx))),
 			request.WithEndpoint(model.Server)),
 	}
 }
@@ -292,7 +292,7 @@ func (n *slaveNode) CreateTask(ctx context.Context, taskType string, state strin
 	}
 
 	taskId := 0
-	if resp.GobDecode(&taskId); taskId > 0 {
+	if err := resp.DecodeGob(&taskId); err == nil && taskId > 0 {
 		return taskId, nil
 	}
 
@@ -317,7 +317,7 @@ func (n *slaveNode) GetTask(ctx context.Context, id int, clearOnComplete bool) (
 	}
 
 	summary := &SlaveTaskSummary{}
-	resp.GobDecode(summary)
+	_ = resp.DecodeGob(summary)
 
 	return summary, nil
 }
@@ -375,7 +375,7 @@ func (b *nodeBase) CreateTask(ctx context.Context, taskType string, state string
 }
 
 func (b *nodeBase) AuthInstance() auth.Auth {
-	return auth.HMACAuth{[]byte(b.model.SlaveKey)}
+	return auth.HMACAuth{SecretKey: []byte(b.model.SlaveKey)}
 }
 
 func (b *nodeBase) GetTask(ctx context.Context, id int, clearOnComplete bool) (*SlaveTaskSummary, error) {

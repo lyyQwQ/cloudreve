@@ -32,7 +32,7 @@ func (testConfigProvider) OptionOverwrite() map[string]any {
 	return map[string]any{}
 }
 
-func (m ClientMock) Request(method, target string, body io.Reader, opts ...Option) *Response {
+func (m *ClientMock) Request(method, target string, body io.Reader, opts ...Option) *Response {
 	args := m.Called(method, target, body, opts)
 	return args.Get(0).(*Response)
 }
