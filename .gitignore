@@ -34,3 +34,8 @@ data/
 tmp/
 .devcontainer/
 cloudreve
+
+# Local AI/workflow/private deployment notes
+.trellis/
+.sisyphus/
+.ssh/

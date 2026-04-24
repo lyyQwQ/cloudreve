@@ -4,6 +4,8 @@ data/
 node_modules/
 *.zip
 .sisyphus/
+.trellis/
+.ssh/
 tmp/
 *.md
 .vscode/
