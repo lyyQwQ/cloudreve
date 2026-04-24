@@ -33,11 +33,13 @@ type (
 	RemoteDownloadTask struct {
 		*queue.DBTask
 
-		l        logging.Logger
-		state    *RemoteDownloadTaskState
-		node     cluster.Node
-		d        downloader.Downloader
-		progress queue.Progresses
+		l            logging.Logger
+		runtimeMu    sync.RWMutex
+		state        *RemoteDownloadTaskState
+		node         cluster.Node
+		d            downloader.Downloader
+		nodeProgress queue.Progresses
+		progress     queue.Progresses
 	}
 	RemoteDownloadTaskPhase string
 	RemoteDownloadTaskState struct {
@@ -116,18 +118,19 @@ func NewRemoteDownloadTaskFromModel(task *ent.Task) queue.Task {
 
 func (m *RemoteDownloadTask) Do(ctx context.Context) (task.Status, error) {
 	dep := dependency.FromContext(ctx)
-	m.l = dep.Logger()
+	m.runtimeMu.Lock()
 
 	// unmarshal state
-	state := &RemoteDownloadTaskState{}
-	if err := json.Unmarshal([]byte(m.State()), state); err != nil {
+	if err := m.loadStateFromModelLocked(); err != nil {
+		m.runtimeMu.Unlock()
 		return task.StatusError, fmt.Errorf("failed to unmarshal state: %w", err)
 	}
-	m.state = state
+	m.l = dep.Logger()
 
 	// select node
 	node, err := allocateNode(ctx, dep, &m.state.NodeState, types.NodeCapabilityRemoteDownload)
 	if err != nil {
+		m.runtimeMu.Unlock()
 		return task.StatusError, fmt.Errorf("failed to allocate node: %w", err)
 	}
 	m.node = node
@@ -136,14 +139,18 @@ func (m *RemoteDownloadTask) Do(ctx context.Context) (task.Status, error) {
 	if m.d == nil {
 		d, err := node.CreateDownloader(ctx, dep.RequestClient(), dep.SettingProvider())
 		if err != nil {
+			m.runtimeMu.Unlock()
 			return task.StatusError, fmt.Errorf("failed to create downloader: %w", err)
 		}
 
 		m.d = d
 	}
 
+	phase := m.state.Phase
+	m.runtimeMu.Unlock()
+
 	next := task.StatusCompleted
-	switch m.state.Phase {
+	switch phase {
 	case RemoteDownloadTaskPhaseNotStarted:
 		next, err = m.createDownloadTask(ctx, dep)
 	case RemoteDownloadTaskPhaseMonitor, RemoteDownloadTaskPhaseAwaitSeeding:
@@ -165,6 +172,25 @@ func (m *RemoteDownloadTask) Do(ctx context.Context) (task.Status, error) {
 	m.Task.PrivateState = string(newStateStr)
 	m.Unlock()
 	return next, err
+}
+
+func (m *RemoteDownloadTask) loadStateFromModelLocked() error {
+	state := &RemoteDownloadTaskState{}
+	if err := json.Unmarshal([]byte(m.State()), state); err != nil {
+		return err
+	}
+
+	m.state = state
+	return nil
+}
+
+func (m *RemoteDownloadTask) stateFromModel() (*RemoteDownloadTaskState, error) {
+	state := &RemoteDownloadTaskState{}
+	if err := json.Unmarshal([]byte(m.State()), state); err != nil {
+		return nil, err
+	}
+
+	return state, nil
 }
 
 func (m *RemoteDownloadTask) createDownloadTask(ctx context.Context, dep dependency.Dep) (task.Status, error) {
@@ -339,7 +365,9 @@ func (m *RemoteDownloadTask) slaveTransfer(ctx context.Context, dep dependency.D
 			return task.StatusError, fmt.Errorf("failed to create slave task: %w", err)
 		}
 
-		m.state.NodeState.progress = nil
+		m.Lock()
+		m.nodeProgress = nil
+		m.Unlock()
 		m.state.SlaveUploadTaskID = taskId
 		m.ResumeAfter(0)
 		return task.StatusSuspending, nil
@@ -352,7 +380,7 @@ func (m *RemoteDownloadTask) slaveTransfer(ctx context.Context, dep dependency.D
 	}
 
 	m.Lock()
-	m.state.NodeState.progress = t.Progress
+	m.nodeProgress = t.Progress
 	m.Unlock()
 
 	m.state.SlaveUploadState = &SlaveUploadTaskState{}
@@ -559,15 +587,29 @@ func (m *RemoteDownloadTask) validateFiles(ctx context.Context, dep dependency.D
 }
 
 func (m *RemoteDownloadTask) Cleanup(ctx context.Context) error {
-	if m.state.Handle != nil {
-		if err := m.d.Cancel(ctx, m.state.Handle); err != nil {
-			m.l.Warning("failed to cancel download task: %s", err)
+	state, err := m.stateFromModel()
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal state: %w", err)
+	}
+
+	m.runtimeMu.RLock()
+	node := m.node
+	d := m.d
+	l := m.l
+	m.runtimeMu.RUnlock()
+	if l == nil {
+		l = logging.FromContext(ctx)
+	}
+
+	if state.Handle != nil && d != nil {
+		if err := d.Cancel(ctx, state.Handle); err != nil {
+			l.Warning("failed to cancel download task: %s", err)
 		}
 	}
 
-	if m.state.Status != nil && m.node.IsMaster() && m.state.Status.SavePath != "" {
-		if err := os.RemoveAll(m.state.Status.SavePath); err != nil {
-			m.l.Warning("failed to remove download temp folder: %s", err)
+	if state.Status != nil && node != nil && node.IsMaster() && state.Status.SavePath != "" {
+		if err := os.RemoveAll(state.Status.SavePath); err != nil {
+			l.Warning("failed to remove download temp folder: %s", err)
 		}
 	}
 
@@ -576,50 +618,74 @@ func (m *RemoteDownloadTask) Cleanup(ctx context.Context) error {
 
 // SetDownloadTarget sets the files to download for the task
 func (m *RemoteDownloadTask) SetDownloadTarget(ctx context.Context, args ...*downloader.SetFileToDownloadArgs) error {
-	if m.state.Handle == nil {
+	state, err := m.stateFromModel()
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal state: %w", err)
+	}
+
+	m.runtimeMu.RLock()
+	d := m.d
+	m.runtimeMu.RUnlock()
+
+	if state.Handle == nil {
 		return fmt.Errorf("download task not created")
 	}
 
-	return m.d.SetFilesToDownload(ctx, m.state.Handle, args...)
+	if d == nil {
+		return fmt.Errorf("download task runtime is not initialized")
+	}
+
+	return d.SetFilesToDownload(ctx, state.Handle, args...)
 }
 
 // CancelDownload cancels the download task
 func (m *RemoteDownloadTask) CancelDownload(ctx context.Context) error {
-	if m.state.Handle == nil {
+	state, err := m.stateFromModel()
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal state: %w", err)
+	}
+
+	m.runtimeMu.RLock()
+	d := m.d
+	m.runtimeMu.RUnlock()
+
+	if state.Handle == nil {
 		return nil
 	}
 
-	return m.d.Cancel(ctx, m.state.Handle)
+	if d == nil {
+		return nil
+	}
+
+	return d.Cancel(ctx, state.Handle)
 }
 
 func (m *RemoteDownloadTask) Summarize(hasher hashid.Encoder) *queue.Summary {
-	// unmarshal state
-	if m.state == nil {
-		if err := json.Unmarshal([]byte(m.State()), &m.state); err != nil {
-			return nil
-		}
+	state, err := m.stateFromModel()
+	if err != nil {
+		return nil
 	}
 
 	var status *downloader.TaskStatus
-	if m.state.Status != nil {
-		status = &*m.state.Status
+	if state.Status != nil {
+		status = &*state.Status
 
 		// Redact save path
 		status.SavePath = ""
 	}
 
-	failed := m.state.Failed
-	if m.state.SlaveUploadState != nil && m.state.Phase != RemoteDownloadTaskPhaseTransfer {
-		failed = len(m.state.SlaveUploadState.Files) - len(m.state.SlaveUploadState.Transferred)
+	failed := state.Failed
+	if state.SlaveUploadState != nil && state.Phase != RemoteDownloadTaskPhaseTransfer {
+		failed = len(state.SlaveUploadState.Files) - len(state.SlaveUploadState.Transferred)
 	}
 
 	return &queue.Summary{
-		Phase:  string(m.state.Phase),
-		NodeID: m.state.NodeID,
+		Phase:  string(state.Phase),
+		NodeID: state.NodeID,
 		Props: map[string]any{
-			SummaryKeySrcStr:         m.state.SrcUri,
-			SummaryKeySrc:            m.state.SrcFileUri,
-			SummaryKeyDst:            m.state.Dst,
+			SummaryKeySrcStr:         state.SrcUri,
+			SummaryKeySrc:            state.SrcFileUri,
+			SummaryKeyDst:            state.Dst,
 			SummaryKeyFailed:         failed,
 			SummaryKeyDownloadStatus: status,
 		},
@@ -627,6 +693,10 @@ func (m *RemoteDownloadTask) Summarize(hasher hashid.Encoder) *queue.Summary {
 }
 
 func (m *RemoteDownloadTask) Progress(ctx context.Context) queue.Progresses {
+	if _, err := m.stateFromModel(); err != nil {
+		return queue.Progresses{}
+	}
+
 	m.Lock()
 	defer m.Unlock()
 
@@ -635,8 +705,8 @@ func (m *RemoteDownloadTask) Progress(ctx context.Context) queue.Progresses {
 		merged[k] = v
 	}
 
-	if m.state.NodeState.progress != nil {
-		for k, v := range m.state.NodeState.progress {
+	if m.nodeProgress != nil {
+		for k, v := range m.nodeProgress {
 			merged[k] = v
 		}
 	}
