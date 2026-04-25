@@ -1035,6 +1035,7 @@ func runSubtitleBurnFFMpeg(ctx context.Context, input, filterArg, output string,
 
 	args = append(args,
 		"-c:a", "copy",
+		"-movflags", "+faststart",
 		"-nostats",
 		"-progress", "pipe:1",
 		output,

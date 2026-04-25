@@ -1192,6 +1192,9 @@ func TestRunSubtitleBurnFFMpeg_DisablesThreadsAndNiceWhenZero(t *testing.T) {
 	if !strings.Contains(ffmpegArgs, "-crf 18") || !strings.Contains(ffmpegArgs, "-preset medium") {
 		t.Fatalf("expected hardcoded quality args, got %q", ffmpegArgs)
 	}
+	if !strings.Contains(ffmpegArgs, "-movflags +faststart") {
+		t.Fatalf("expected faststart movflags, got %q", ffmpegArgs)
+	}
 }
 
 func TestRunSubtitleBurnFFMpeg_FallbackToFFMpegWhenNiceUnavailable(t *testing.T) {
