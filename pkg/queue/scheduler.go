@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"container/heap"
 	"errors"
 	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 	"sync"
@@ -44,14 +45,16 @@ func (s *fifoScheduler) Queue(task Task) error {
 	if atomic.LoadInt32(&s.stopFlag) == 1 {
 		return ErrQueueShutdown
 	}
+
+	s.Lock()
+	defer s.Unlock()
+
 	if s.capacity > 0 && s.count >= s.capacity {
 		return ErrMaxCapacity
 	}
 
-	s.Lock()
-	s.taskQueue.Push(task)
+	heap.Push(&s.taskQueue, task)
 	s.count++
-	s.Unlock()
 
 	return nil
 }
@@ -62,18 +65,18 @@ func (s *fifoScheduler) Request() (Task, error) {
 		return nil, ErrQueueShutdown
 	}
 
+	s.Lock()
+	defer s.Unlock()
+
 	if s.count == 0 {
 		return nil, ErrNoTaskInQueue
 	}
-	s.Lock()
-	if s.taskQueue[s.taskQueue.Len()-1].ResumeTime() > time.Now().Unix() {
-		s.Unlock()
+	if s.taskQueue.Len() == 0 || s.taskQueue[0].ResumeTime() > time.Now().Unix() {
 		return nil, ErrNoTaskInQueue
 	}
 
-	data := s.taskQueue.Pop()
+	data := heap.Pop(&s.taskQueue)
 	s.count--
-	s.Unlock()
 
 	return data.(Task), nil
 }
@@ -90,7 +93,7 @@ func (s *fifoScheduler) Shutdown() error {
 // NewFifoScheduler for create new Scheduler instance
 func NewFifoScheduler(queueSize int, logger logging.Logger) Scheduler {
 	w := &fifoScheduler{
-		taskQueue: make([]Task, 2),
+		taskQueue: make([]Task, 0),
 		capacity:  queueSize,
 		logger:    logger,
 	}

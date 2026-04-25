@@ -193,6 +193,51 @@ func (m *RemoteDownloadTask) stateFromModel() (*RemoteDownloadTaskState, error) 
 	return state, nil
 }
 
+func (m *RemoteDownloadTask) ensureDownloaderForState(ctx context.Context, state *RemoteDownloadTaskState) (downloader.Downloader, error) {
+	m.runtimeMu.Lock()
+	defer m.runtimeMu.Unlock()
+
+	if m.state == nil {
+		m.state = state
+	}
+	if m.d != nil {
+		return m.d, nil
+	}
+	if state == nil || state.Handle == nil {
+		return nil, nil
+	}
+
+	dep, _ := ctx.Value(dependency.DepCtx{}).(dependency.Dep)
+	if m.node == nil {
+		if dep == nil {
+			return nil, fmt.Errorf("download task runtime is not initialized")
+		}
+
+		node, err := allocateNode(ctx, dep, &m.state.NodeState, types.NodeCapabilityRemoteDownload)
+		if err != nil {
+			return nil, err
+		}
+		m.node = node
+	}
+
+	var d downloader.Downloader
+	var err error
+	if dep == nil {
+		d, err = m.node.CreateDownloader(ctx, nil, nil)
+	} else {
+		d, err = m.node.CreateDownloader(ctx, dep.RequestClient(), dep.SettingProvider())
+	}
+	if err != nil {
+		return nil, err
+	}
+	if d == nil {
+		return nil, fmt.Errorf("download task runtime is not initialized")
+	}
+
+	m.d = d
+	return d, nil
+}
+
 func (m *RemoteDownloadTask) createDownloadTask(ctx context.Context, dep dependency.Dep) (task.Status, error) {
 	if m.state.Handle != nil {
 		m.state.Phase = RemoteDownloadTaskPhaseMonitor
@@ -623,16 +668,13 @@ func (m *RemoteDownloadTask) SetDownloadTarget(ctx context.Context, args ...*dow
 		return fmt.Errorf("failed to unmarshal state: %w", err)
 	}
 
-	m.runtimeMu.RLock()
-	d := m.d
-	m.runtimeMu.RUnlock()
-
 	if state.Handle == nil {
 		return fmt.Errorf("download task not created")
 	}
 
-	if d == nil {
-		return fmt.Errorf("download task runtime is not initialized")
+	d, err := m.ensureDownloaderForState(ctx, state)
+	if err != nil {
+		return fmt.Errorf("download task runtime is not initialized: %w", err)
 	}
 
 	return d.SetFilesToDownload(ctx, state.Handle, args...)
@@ -645,16 +687,13 @@ func (m *RemoteDownloadTask) CancelDownload(ctx context.Context) error {
 		return fmt.Errorf("failed to unmarshal state: %w", err)
 	}
 
-	m.runtimeMu.RLock()
-	d := m.d
-	m.runtimeMu.RUnlock()
-
 	if state.Handle == nil {
 		return nil
 	}
 
-	if d == nil {
-		return nil
+	d, err := m.ensureDownloaderForState(ctx, state)
+	if err != nil {
+		return fmt.Errorf("download task runtime is not initialized: %w", err)
 	}
 
 	return d.Cancel(ctx, state.Handle)

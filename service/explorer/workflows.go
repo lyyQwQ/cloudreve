@@ -408,9 +408,29 @@ func CancelDownloadTask(c *gin.Context, taskID int) error {
 		if err := downloadTask.CancelDownload(c); err != nil {
 			return serializer.NewError(serializer.CodeInternalSetting, "Failed to cancel download task", err)
 		}
+		if setter, ok := t.(interface{ SetCanceled() }); ok {
+			setter.SetCanceled()
+		}
+
+		model := t.Model()
+		if model == nil {
+			return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+		}
+		args := &inventory.TaskArgs{Status: task.StatusCanceled, PublicState: model.PublicState, PrivateState: model.PrivateState}
+		if args.PublicState == nil {
+			args.PublicState = &types.TaskPublicState{}
+		}
+
+		updated, err := dep.TaskClient().Update(c, model, args)
+		if err != nil {
+			return serializer.NewError(serializer.CodeDBError, "Failed to cancel task", err)
+		}
+		t.OnPersisted(updated)
+		r.Delete(taskID)
+		return nil
 	}
 
-	return nil
+	return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
 }
 
 func CancelVideoTask(c *gin.Context, taskID int) error {

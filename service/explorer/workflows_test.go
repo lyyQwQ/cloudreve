@@ -2,16 +2,19 @@ package explorer
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/enttest"
+	enttask "github.com/cloudreve/Cloudreve/v4/ent/task"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/boolset"
 	"github.com/cloudreve/Cloudreve/v4/pkg/conf"
+	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/workflows"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 	"github.com/cloudreve/Cloudreve/v4/pkg/queue"
@@ -143,5 +146,56 @@ func TestListTasksGeneralIncludesVideoWorkflowTypes(t *testing.T) {
 	}
 	if _, ok := typesInResp[queue.RemoteDownloadTaskType]; ok {
 		t.Fatalf("did not expect %s in general task list, got %+v", queue.RemoteDownloadTaskType, resp.Tasks)
+	}
+}
+
+func TestCancelDownloadTaskPersistsCanceledStatus(t *testing.T) {
+	dep, client, user := newExplorerTestDep(t)
+	defer client.Close()
+
+	stateBytes, err := json.Marshal(&workflows.RemoteDownloadTaskState{
+		SrcUri: "magnet:?xt=urn:btih:test",
+		Dst:    "cloudreve://my/files",
+		Phase:  workflows.RemoteDownloadTaskPhaseMonitor,
+	})
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+
+	model, err := client.Task.Create().
+		SetType(queue.RemoteDownloadTaskType).
+		SetStatus(enttask.StatusSuspending).
+		SetUserID(user.ID).
+		SetCorrelationID(uuid.Must(uuid.NewV4())).
+		SetPublicState(&types.TaskPublicState{}).
+		SetPrivateState(string(stateBytes)).
+		Save(context.Background())
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	model, err = client.Task.Query().Where(enttask.ID(model.ID)).WithUser().Only(context.Background())
+	if err != nil {
+		t.Fatalf("reload task: %v", err)
+	}
+	restored, err := queue.NewTaskFromModel(model)
+	if err != nil {
+		t.Fatalf("restore task: %v", err)
+	}
+	dep.TaskRegistry().Set(model.ID, restored)
+
+	if err := CancelDownloadTask(newExplorerContext(dep, user), model.ID); err != nil {
+		t.Fatalf("CancelDownloadTask: %v", err)
+	}
+
+	persisted, err := client.Task.Get(context.Background(), model.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if persisted.Status != enttask.StatusCanceled {
+		t.Fatalf("persisted status = %q, want %q", persisted.Status, enttask.StatusCanceled)
+	}
+	if _, found := dep.TaskRegistry().Get(model.ID); found {
+		t.Fatal("canceled task should be removed from registry")
 	}
 }
