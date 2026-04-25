@@ -1290,7 +1290,7 @@ func buildSubtitleFilterArg(input string, option *VideoSubtitleOption, videoHeig
 			return buildExternalSubtitleFilterArg(externalPath, videoHeight), VideoSubtitleModeExternal, nil
 		}
 
-		return "subtitles=" + escapeFFMpegSubtitlePath(input) + ":si=0", VideoSubtitleModeEmbedded, nil
+		return buildEmbeddedSubtitleFilterArg(input, 0), VideoSubtitleModeEmbedded, nil
 	case VideoSubtitleModeExternal:
 		if option == nil {
 			return "", "", fmt.Errorf("missing subtitle option for external mode (%w)", CriticalErr)
@@ -1310,7 +1310,7 @@ func buildSubtitleFilterArg(input string, option *VideoSubtitleOption, videoHeig
 			return "", "", fmt.Errorf("subtitle embedded index must be >= 0 (%w)", CriticalErr)
 		}
 
-		return fmt.Sprintf("subtitles=%s:si=%d", escapeFFMpegSubtitlePath(input), *option.EmbeddedIndex), VideoSubtitleModeEmbedded, nil
+		return buildEmbeddedSubtitleFilterArg(input, *option.EmbeddedIndex), VideoSubtitleModeEmbedded, nil
 	default:
 		return "", "", fmt.Errorf("invalid subtitle mode %q (%w)", mode, CriticalErr)
 	}
@@ -1374,12 +1374,20 @@ func resolveSubtitleLanguage(option *VideoSubtitleOption, modeUsed, current stri
 }
 
 func buildExternalSubtitleFilterArg(path string, videoHeight int) string {
-	base := "subtitles=" + escapeFFMpegSubtitlePath(path)
+	base := buildSubtitleFilenameFilterArg(path)
 	if !strings.EqualFold(filepath.Ext(path), ".srt") {
 		return base
 	}
 
 	return base + ":force_style='" + subtitleForceStyle(videoHeight) + "'"
+}
+
+func buildEmbeddedSubtitleFilterArg(path string, streamIndex int) string {
+	return fmt.Sprintf("%s:si=%d", buildSubtitleFilenameFilterArg(path), streamIndex)
+}
+
+func buildSubtitleFilenameFilterArg(path string) string {
+	return "subtitles=filename='" + escapeFFMpegSubtitlePath(path) + "'"
 }
 
 func subtitleForceStyle(videoHeight int) string {
@@ -1455,17 +1463,23 @@ func listExternalSubtitlePaths(input string) ([]string, error) {
 }
 
 func escapeFFMpegSubtitlePath(input string) string {
-	replacer := strings.NewReplacer(
-		`\\`, `\\\\`,
-		`:`, `\\:`,
-		`'`, `\\'`,
-		`,`, `\\,`,
-		`;`, `\\;`,
-		`[`, `\\[`,
-		`]`, `\\]`,
-	)
+	var escaped strings.Builder
+	escaped.Grow(len(input))
 
-	return replacer.Replace(input)
+	for _, r := range input {
+		switch r {
+		case '\\':
+			escaped.WriteString(`\\`)
+		case ':':
+			escaped.WriteString(`\:`)
+		case '\'':
+			escaped.WriteString("'" + `\\\` + "''")
+		default:
+			escaped.WriteRune(r)
+		}
+	}
+
+	return escaped.String()
 }
 
 func selectVideoExecutionNode(ctx context.Context, dep videoTaskDep, preferredNodeID int) (int, bool, error) {

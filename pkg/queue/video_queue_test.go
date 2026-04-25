@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -616,7 +617,7 @@ func TestVideoSubtitleBurnTask_DoRunsFFMpegExternalSubtitle(t *testing.T) {
 		t.Fatalf("read ffmpeg args: %v", err)
 	}
 	args := string(bytes.TrimSpace(argsRaw))
-	for _, expected := range []string{"-vf subtitles=", "movie.zh.srt", "force_style='FontSize=22,MarginV=28,Outline=0.3,Shadow=1'", "-c:v libx264", "-c:a copy"} {
+	for _, expected := range []string{"-vf subtitles=filename='", "movie.zh.srt'", "force_style='FontSize=22,MarginV=28,Outline=0.3,Shadow=1'", "-c:v libx264", "-c:a copy"} {
 		if !strings.Contains(args, expected) {
 			t.Fatalf("expected ffmpeg args to contain %q, got %q", expected, args)
 		}
@@ -659,7 +660,7 @@ func TestVideoSubtitleBurnTask_DoBuildsEmbeddedArgs(t *testing.T) {
 		t.Fatalf("read ffmpeg args: %v", err)
 	}
 	args := string(bytes.TrimSpace(argsRaw))
-	if !strings.Contains(args, ":si=3") {
+	if !strings.Contains(args, "subtitles=filename='") || !strings.Contains(args, "':si=3") {
 		t.Fatalf("expected embedded subtitle ffmpeg arg, got %q", args)
 	}
 	if strings.Contains(args, "force_style=") {
@@ -1009,11 +1010,158 @@ func TestBuildSubtitleFilterArg_AssSubtitleDoesNotUseForceStyle(t *testing.T) {
 	}
 }
 
-func TestEscapeFFMpegSubtitlePath_EscapesSemicolon(t *testing.T) {
-	raw := "/tmp/a;b.srt"
-	escaped := escapeFFMpegSubtitlePath(raw)
-	if !strings.Contains(escaped, `a\\;b.srt`) {
-		t.Fatalf("expected semicolon escaped, got %q", escaped)
+func TestBuildSubtitleFilterArg_EmbeddedUsesSafeFilenameOption(t *testing.T) {
+	baseDir := t.TempDir()
+	input := filepath.Join(baseDir, "中文 path [01],semi;Estrella's.mkv")
+	if err := os.WriteFile(input, []byte("video"), 0600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	idx := 2
+	filterArg, mode, err := buildSubtitleFilterArg(input, &VideoSubtitleOption{
+		Mode:          VideoSubtitleModeEmbedded,
+		EmbeddedIndex: &idx,
+	}, 720)
+	if err != nil {
+		t.Fatalf("buildSubtitleFilterArg embedded: %v", err)
+	}
+	if mode != VideoSubtitleModeEmbedded {
+		t.Fatalf("expected mode embedded, got %q", mode)
+	}
+	assertSubtitleFilterHasSafeFilename(t, filterArg, input)
+	if !strings.HasSuffix(filterArg, "':si=2") {
+		t.Fatalf("expected embedded stream index, got %q", filterArg)
+	}
+	if strings.Contains(filterArg, "force_style=") {
+		t.Fatalf("embedded subtitle should not include force_style, got %q", filterArg)
+	}
+}
+
+func TestBuildSubtitleFilterArg_AutoFallbackEmbeddedUsesSafeFilenameOption(t *testing.T) {
+	baseDir := t.TempDir()
+	input := filepath.Join(baseDir, "中文 path [auto],semi;Estrella's.mkv")
+	if err := os.WriteFile(input, []byte("video"), 0600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	filterArg, mode, err := buildSubtitleFilterArg(input, nil, 720)
+	if err != nil {
+		t.Fatalf("buildSubtitleFilterArg auto: %v", err)
+	}
+	if mode != VideoSubtitleModeEmbedded {
+		t.Fatalf("expected embedded fallback, got %q", mode)
+	}
+	assertSubtitleFilterHasSafeFilename(t, filterArg, input)
+	if !strings.HasSuffix(filterArg, "':si=0") {
+		t.Fatalf("expected auto fallback stream index, got %q", filterArg)
+	}
+	if strings.Contains(filterArg, "force_style=") {
+		t.Fatalf("auto fallback embedded subtitle should not include force_style, got %q", filterArg)
+	}
+}
+
+func TestBuildSubtitleFilterArg_ExternalSRTUsesSafeFilenameAndForceStyle(t *testing.T) {
+	baseDir := t.TempDir()
+	input := filepath.Join(baseDir, "movie.mp4")
+	if err := os.WriteFile(input, []byte("video"), 0600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	subtitleName := "字幕 中文 [v2],semi;Estrella's.srt"
+	subtitlePath := filepath.Join(baseDir, subtitleName)
+	if err := os.WriteFile(subtitlePath, []byte("1"), 0600); err != nil {
+		t.Fatalf("write srt: %v", err)
+	}
+
+	filterArg, mode, err := buildSubtitleFilterArg(input, &VideoSubtitleOption{Mode: VideoSubtitleModeExternal, ExternalName: subtitleName}, 1080)
+	if err != nil {
+		t.Fatalf("buildSubtitleFilterArg srt: %v", err)
+	}
+	if mode != VideoSubtitleModeExternal {
+		t.Fatalf("expected mode external, got %q", mode)
+	}
+	assertSubtitleFilterHasSafeFilename(t, filterArg, subtitlePath)
+	if !strings.Contains(filterArg, "force_style='FontSize=22,MarginV=28,Outline=0.3,Shadow=1'") {
+		t.Fatalf("expected srt force_style, got %q", filterArg)
+	}
+}
+
+func TestBuildSubtitleFilterArg_ExternalAssAndSsaUseSafeFilenameWithoutForceStyle(t *testing.T) {
+	for _, ext := range []string{".ass", ".ssa"} {
+		t.Run(ext, func(t *testing.T) {
+			baseDir := t.TempDir()
+			input := filepath.Join(baseDir, "movie.mp4")
+			if err := os.WriteFile(input, []byte("video"), 0600); err != nil {
+				t.Fatalf("write input: %v", err)
+			}
+
+			subtitleName := "字幕 中文 [v2],semi;Estrella's" + ext
+			subtitlePath := filepath.Join(baseDir, subtitleName)
+			if err := os.WriteFile(subtitlePath, []byte("[Script Info]"), 0600); err != nil {
+				t.Fatalf("write subtitle: %v", err)
+			}
+
+			filterArg, mode, err := buildSubtitleFilterArg(input, &VideoSubtitleOption{Mode: VideoSubtitleModeExternal, ExternalName: subtitleName}, 1080)
+			if err != nil {
+				t.Fatalf("buildSubtitleFilterArg %s: %v", ext, err)
+			}
+			if mode != VideoSubtitleModeExternal {
+				t.Fatalf("expected mode external, got %q", mode)
+			}
+			assertSubtitleFilterHasSafeFilename(t, filterArg, subtitlePath)
+			if strings.Contains(filterArg, "force_style=") {
+				t.Fatalf("expected %s without force_style, got %q", ext, filterArg)
+			}
+		})
+	}
+}
+
+func assertSubtitleFilterHasSafeFilename(t *testing.T, filterArg, rawPath string) {
+	t.Helper()
+
+	expected := "subtitles=filename='" + escapeFFMpegSubtitlePath(rawPath) + "'"
+	if !strings.Contains(filterArg, expected) {
+		t.Fatalf("expected safe filename option %q, got %q", expected, filterArg)
+	}
+
+	for _, expectedEscape := range []string{"中文", `[`, `]`, `,`, `;`, `'` + `\\\` + `''`} {
+		if !strings.Contains(filterArg, expectedEscape) {
+			t.Fatalf("expected filter arg to contain %q, got %q", expectedEscape, filterArg)
+		}
+	}
+}
+
+func TestEscapeFFMpegSubtitlePath_QuotedValueParsesWithFFMpeg(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not available")
+	}
+
+	helpCmd := exec.Command(ffmpegPath, "-hide_banner", "-h", "filter=metadata")
+	if output, err := helpCmd.CombinedOutput(); err != nil || !strings.Contains(string(output), "Filter metadata") {
+		t.Skip("ffmpeg metadata filter is not available")
+	}
+
+	rawPath := "/tmp/中文 path [01],semi;Estrella's:part.srt"
+	filterArg := "metadata=mode=add:key=k:value='" + escapeFFMpegSubtitlePath(rawPath) + "':function=same_str,metadata=mode=print:file=-"
+	cmd := exec.Command(
+		ffmpegPath,
+		"-hide_banner",
+		"-v", "info",
+		"-f", "lavfi",
+		"-i", "color=s=16x16:d=0.1",
+		"-vf", filterArg,
+		"-frames:v", "1",
+		"-f", "null",
+		"-",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ffmpeg metadata parse failed: %v\nfilter=%s\noutput=%s", err, filterArg, output)
+	}
+
+	if !strings.Contains(string(output), "k="+rawPath) {
+		t.Fatalf("expected ffmpeg to parse subtitle path %q from filter %q, got output:\n%s", rawPath, filterArg, output)
 	}
 }
 
