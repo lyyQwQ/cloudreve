@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/enttest"
@@ -213,9 +214,22 @@ func TestVideoTaskProgressShapeIncludesRemoteWorkerPhases(t *testing.T) {
 }
 
 type videoTaskTestDep struct {
-	client     *ent.Client
-	fileClient inventory.FileClient
-	userClient inventory.UserClient
+	client          *ent.Client
+	fileClient      inventory.FileClient
+	userClient      inventory.UserClient
+	settingProvider settingpkg.Provider
+}
+
+type queueTestSettingAdapter struct {
+	values map[string]any
+}
+
+func (s *queueTestSettingAdapter) Get(_ context.Context, name string, defaultVal any) any {
+	if val, ok := s.values[name]; ok {
+		return val
+	}
+
+	return defaultVal
 }
 
 func (d *videoTaskTestDep) ForkWithLogger(ctx context.Context, l logging.Logger) context.Context {
@@ -234,6 +248,10 @@ func (d *videoTaskTestDep) DBClient() *ent.Client {
 
 func (d *videoTaskTestDep) UserClient() inventory.UserClient {
 	return d.userClient
+}
+
+func (d *videoTaskTestDep) SettingProvider() settingpkg.Provider {
+	return d.settingProvider
 }
 
 func newVideoTaskTestFixture(t *testing.T) (*videoTaskTestDep, *ent.User, int) {
@@ -258,9 +276,10 @@ func newVideoTaskTestFixture(t *testing.T) (*videoTaskTestDep, *ent.User, int) {
 	}
 
 	dep := &videoTaskTestDep{
-		client:     client,
-		fileClient: inventory.NewFileClient(client, conf.SQLiteDB, hasher),
-		userClient: inventory.NewUserClient(client),
+		client:          client,
+		fileClient:      inventory.NewFileClient(client, conf.SQLiteDB, hasher),
+		userClient:      inventory.NewUserClient(client),
+		settingProvider: settingpkg.NewProvider(&queueTestSettingAdapter{values: map[string]any{}}),
 	}
 
 	policy, err := client.StoragePolicy.Create().
@@ -1414,6 +1433,221 @@ func TestDownloadRemoteWorkerOutputResumesPartFile(t *testing.T) {
 	}
 }
 
+func TestDownloadRemoteWorkerOutputRestartsWhenRangeIgnored(t *testing.T) {
+	output := []byte("0123456789")
+	var rangeHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("unexpected authorization header: %q", r.Header.Get("Authorization"))
+		}
+		switch r.Method {
+		case http.MethodHead:
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", strconv.Itoa(len(output)))
+			return
+		case http.MethodGet:
+			rangeHeader = r.Header.Get("Range")
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", strconv.Itoa(len(output)))
+			_, _ = w.Write(output)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+
+	taskRef := NewVideoSubtitleBurnTaskFromModel(&ent.Task{
+		Type:         VideoSubtitleBurnTaskType,
+		Status:       task.StatusProcessing,
+		PublicState:  &types.TaskPublicState{},
+		PrivateState: `{"file_id":1}`,
+	})
+	outPath := filepath.Join(t.TempDir(), "remote-output.mp4")
+	if err := os.WriteFile(outPath+".part", output[:4], 0600); err != nil {
+		t.Fatalf("write part: %v", err)
+	}
+
+	cfg := &settingpkg.RemoteFFMpegWorker{Endpoint: server.URL, APIKey: "secret"}
+	if err := downloadRemoteWorkerOutput(context.Background(), taskRef, cfg, "job-1", outPath, int64(len(output))); err != nil {
+		t.Fatalf("downloadRemoteWorkerOutput: %v", err)
+	}
+	if rangeHeader != "bytes=4-" {
+		t.Fatalf("expected resume range bytes=4-, got %q", rangeHeader)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != string(output) {
+		t.Fatalf("output should be restarted instead of appended, got %q", got)
+	}
+}
+
+func TestDownloadRemoteWorkerOutputRequiresKnownSize(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("unexpected authorization header: %q", r.Header.Get("Authorization"))
+		}
+		if r.Method != http.MethodHead {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		w.Header().Set("Accept-Ranges", "bytes")
+	}))
+	defer server.Close()
+
+	taskRef := NewVideoSubtitleBurnTaskFromModel(&ent.Task{
+		Type:         VideoSubtitleBurnTaskType,
+		Status:       task.StatusProcessing,
+		PublicState:  &types.TaskPublicState{},
+		PrivateState: `{"file_id":1}`,
+	})
+	outPath := filepath.Join(t.TempDir(), "remote-output.mp4")
+	cfg := &settingpkg.RemoteFFMpegWorker{Endpoint: server.URL, APIKey: "secret"}
+
+	err := downloadRemoteWorkerOutput(context.Background(), taskRef, cfg, "job-1", outPath, 0)
+	if err == nil || !strings.Contains(err.Error(), "output size is unknown") {
+		t.Fatalf("expected unknown size error, got %v", err)
+	}
+}
+
+func TestDownloadRemoteWorkerOutputRetriesInterruptedStream(t *testing.T) {
+	oldDelays := remoteWorkerOutputDownloadRetryDelays
+	remoteWorkerOutputDownloadRetryDelays = []time.Duration{0}
+	t.Cleanup(func() { remoteWorkerOutputDownloadRetryDelays = oldDelays })
+
+	output := []byte("0123456789")
+	var getCount int
+	var ranges []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("unexpected authorization header: %q", r.Header.Get("Authorization"))
+		}
+		switch r.Method {
+		case http.MethodHead:
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", strconv.Itoa(len(output)))
+			return
+		case http.MethodGet:
+			getCount++
+			ranges = append(ranges, r.Header.Get("Range"))
+			w.Header().Set("Accept-Ranges", "bytes")
+			if getCount == 1 {
+				w.Header().Set("Content-Length", strconv.Itoa(len(output)))
+				_, _ = w.Write(output[:4])
+				return
+			}
+			if r.Header.Get("Range") != "bytes=4-" {
+				t.Fatalf("expected resumed range bytes=4-, got %q", r.Header.Get("Range"))
+			}
+			w.Header().Set("Content-Range", "bytes 4-9/10")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(output[4:])
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+
+	taskRef := NewVideoSubtitleBurnTaskFromModel(&ent.Task{
+		Type:         VideoSubtitleBurnTaskType,
+		Status:       task.StatusProcessing,
+		PublicState:  &types.TaskPublicState{},
+		PrivateState: `{"file_id":1}`,
+	})
+	outPath := filepath.Join(t.TempDir(), "remote-output.mp4")
+	cfg := &settingpkg.RemoteFFMpegWorker{Endpoint: server.URL, APIKey: "secret"}
+
+	if err := downloadRemoteWorkerOutput(context.Background(), taskRef, cfg, "job-1", outPath, int64(len(output))); err != nil {
+		t.Fatalf("downloadRemoteWorkerOutput: %v", err)
+	}
+	if getCount != 2 {
+		t.Fatalf("expected two GET attempts, got %d ranges=%v", getCount, ranges)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != string(output) {
+		t.Fatalf("output mismatch: %q", got)
+	}
+}
+
+func TestRemoteWorkerOutputDownloadDefaultAttemptsAtLeastTen(t *testing.T) {
+	if got := len(remoteWorkerOutputDownloadRetryDelays) + 1; got < 10 {
+		t.Fatalf("remote worker output download should allow at least 10 total attempts, got %d", got)
+	}
+}
+
+func TestVideoSubtitleBurnTask_DoRemoteOutputFailureDoesNotFallbackLocal(t *testing.T) {
+	oldDelays := remoteWorkerOutputDownloadRetryDelays
+	remoteWorkerOutputDownloadRetryDelays = []time.Duration{0, 0}
+	t.Cleanup(func() { remoteWorkerOutputDownloadRetryDelays = oldDelays })
+
+	var outputGetCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/") && r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("unexpected authorization header: %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs/embedded-subtitle-burn-url":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job_id":"job-1","status":"queued"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job-1":
+			_, _ = w.Write([]byte(`{"job_id":"job-1","status":"completed","progress":100,"output_size":10}`))
+		case r.Method == http.MethodHead && r.URL.Path == "/v1/jobs/job-1/output":
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", "10")
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job-1/output":
+			outputGetCount++
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("temporary output download error"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dep, user, fileID := newVideoTaskTestFixture(t)
+	dep.settingProvider = settingpkg.NewProvider(&queueTestSettingAdapter{values: map[string]any{
+		"siteURL":                           server.URL,
+		"secret_key":                        "source-secret",
+		"video_ffmpeg_worker_enabled":       "1",
+		"video_ffmpeg_worker_endpoint":      server.URL,
+		"video_ffmpeg_worker_api_key":       "secret",
+		"video_ffmpeg_worker_timeout":       "60",
+		"video_ffmpeg_worker_poll_interval": "0",
+	}})
+
+	binDir := t.TempDir()
+	ffmpegArgsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFProbe(t, binDir, `{"streams":[{"codec_type":"video","codec_name":"h264","height":1080}],"format":{"duration":"10","bit_rate":"1000000"}}`, "", 0)
+	prepareFakeFFMpegSuccess(t, binDir, ffmpegArgsFile)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	idx := 0
+	tk, err := NewVideoSubtitleBurnTask(context.Background(), fileID, user, &VideoSubtitleOption{
+		Mode:          VideoSubtitleModeEmbedded,
+		EmbeddedIndex: &idx,
+	})
+	if err != nil {
+		t.Fatalf("NewVideoSubtitleBurnTask: %v", err)
+	}
+
+	status, err := tk.Do(newVideoTaskCtx(dep))
+	if status != task.StatusError {
+		t.Fatalf("expected status error, got %q", status)
+	}
+	if err == nil || !strings.Contains(err.Error(), "remote worker output download failed") {
+		t.Fatalf("expected remote output download error, got %v", err)
+	}
+	if outputGetCount != 3 {
+		t.Fatalf("expected three output GET attempts, got %d", outputGetCount)
+	}
+	if _, err := os.Stat(ffmpegArgsFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local ffmpeg should not run after remote job start, stat err=%v", err)
+	}
+}
+
 func TestRedactRemoteWorkerTextRemovesSensitiveValues(t *testing.T) {
 	cfg := &settingpkg.RemoteFFMpegWorker{APIKey: "secret-token"}
 	input := "Authorization: Bearer secret-token failed https://cloudreve.example.com/api/v4/video/worker/source/1?signature=abc123&file_id=2"
@@ -1423,5 +1657,11 @@ func TestRedactRemoteWorkerTextRemovesSensitiveValues(t *testing.T) {
 	}
 	if !strings.Contains(got, "REDACTED") {
 		t.Fatalf("expected redaction marker, got %s", got)
+	}
+
+	escapedInput := `{"source_url":"https:\/\/cloudreve.example.com\/api\/v4\/video\/worker\/source\/1?expires=1\u0026signature=abc123\u0026file_id=2","error":"Authorization: Bearer secret-token"}`
+	got = redactRemoteWorkerText(cfg, escapedInput)
+	if strings.Contains(got, "secret-token") || strings.Contains(got, "abc123") || strings.Contains(got, "file_id=2") {
+		t.Fatalf("escaped sensitive value was not redacted: %s", got)
 	}
 }

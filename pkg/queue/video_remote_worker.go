@@ -21,6 +21,29 @@ import (
 )
 
 var remoteWorkerHTTPClient = http.DefaultClient
+var remoteWorkerOutputDownloadRetryDelays = []time.Duration{
+	time.Second,
+	2 * time.Second,
+	5 * time.Second,
+	10 * time.Second,
+	10 * time.Second,
+	20 * time.Second,
+	30 * time.Second,
+	30 * time.Second,
+	60 * time.Second,
+}
+
+type remoteWorkerStartedError struct {
+	err error
+}
+
+func (e *remoteWorkerStartedError) Error() string {
+	return e.err.Error()
+}
+
+func (e *remoteWorkerStartedError) Unwrap() error {
+	return e.err
+}
 
 type remoteWorkerJobCreateResponse struct {
 	JobID  string `json:"job_id"`
@@ -132,14 +155,14 @@ func runRemoteSubtitleBurn(ctx context.Context, taskRef *VideoSubtitleBurnTask, 
 
 	status, err := pollRemoteWorkerJob(workerCtx, taskRef, cfg, jobID)
 	if err != nil {
-		return err
+		return &remoteWorkerStartedError{err: err}
 	}
 	if status.OutputSize > 0 {
 		updateVideoTaskWorkerOutputSize(taskRef.DBTask, status.OutputSize)
 	}
 
 	if err := downloadRemoteWorkerOutput(workerCtx, taskRef, cfg, jobID, outputPath, status.OutputSize); err != nil {
-		return err
+		return &remoteWorkerStartedError{err: err}
 	}
 	completed = true
 	updateVideoTaskWorkerProgress(taskRef.DBTask, workerTransferPhaseOutputDownload, 100, 100, 0, 0)
@@ -284,11 +307,58 @@ func downloadRemoteWorkerOutput(ctx context.Context, taskRef *VideoSubtitleBurnT
 	if expectedSize <= 0 {
 		expectedSize = headSize
 	}
+	if expectedSize <= 0 {
+		return fmt.Errorf("remote worker output size is unknown")
+	}
 	if expectedSize > 0 && headSize > 0 && expectedSize != headSize {
 		return fmt.Errorf("remote worker output size mismatch: worker=%d head=%d", expectedSize, headSize)
 	}
 
 	partPath := outputPath + ".part"
+	offset := int64(0)
+	if st, err := os.Stat(partPath); err == nil {
+		offset = st.Size()
+		if expectedSize > 0 && offset > expectedSize {
+			if removeErr := os.Remove(partPath); removeErr != nil {
+				return fmt.Errorf("failed to reset oversized remote worker part file: %w", removeErr)
+			}
+			offset = 0
+		}
+	}
+	if expectedSize > 0 && offset == expectedSize {
+		if err := os.Rename(partPath, outputPath); err != nil {
+			return fmt.Errorf("failed to finalize existing remote worker part file: %w", err)
+		}
+		return nil
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= len(remoteWorkerOutputDownloadRetryDelays); attempt++ {
+		if attempt > 0 {
+			delay := remoteWorkerOutputDownloadRetryDelays[attempt-1]
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		if err := downloadRemoteWorkerOutputAttempt(ctx, taskRef, cfg, jobID, outputPath, partPath, expectedSize); err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			continue
+		}
+		return nil
+	}
+
+	return fmt.Errorf("remote worker output download failed after %d attempts: %w", len(remoteWorkerOutputDownloadRetryDelays)+1, lastErr)
+}
+
+func downloadRemoteWorkerOutputAttempt(ctx context.Context, taskRef *VideoSubtitleBurnTask, cfg *settingpkg.RemoteFFMpegWorker, jobID, outputPath, partPath string, expectedSize int64) error {
 	offset := int64(0)
 	if st, err := os.Stat(partPath); err == nil {
 		offset = st.Size()
@@ -490,6 +560,11 @@ func redactRemoteWorkerText(cfg *settingpkg.RemoteFFMpegWorker, text string) str
 	if cfg != nil && cfg.APIKey != "" {
 		text = strings.ReplaceAll(text, cfg.APIKey, "REDACTED")
 	}
+	text = strings.ReplaceAll(text, `\/`, "/")
+	text = strings.ReplaceAll(text, `\u0026`, "&")
+	text = strings.ReplaceAll(text, `\u003d`, "=")
+	text = strings.ReplaceAll(text, `\u003F`, "?")
+	text = strings.ReplaceAll(text, `\u003f`, "?")
 	text = regexp.MustCompile(`(?i)(Authorization:\s*Bearer\s+)[^\s]+`).ReplaceAllString(text, "${1}REDACTED")
 	text = regexp.MustCompile(`(?i)(https?://[^\s"']+/api/v4/video/worker/source/[^?\s"']+\?)[^\s"']+`).ReplaceAllString(text, "${1}REDACTED")
 	text = regexp.MustCompile(`(?i)(/api/v4/video/worker/source/[^?\s"']+\?)[^\s"']+`).ReplaceAllString(text, "${1}REDACTED")

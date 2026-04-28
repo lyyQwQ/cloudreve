@@ -257,7 +257,12 @@ func (t *VideoSubtitleBurnTask) Do(ctx context.Context) (task.Status, error) {
 			} else if ctx.Err() != nil {
 				return task.StatusError, wrapVideoTaskErr(remoteErr)
 			} else {
-				logger.Warning("Video subtitle remote worker failed, fallback to local ffmpeg task_type=%s file_id=%d mode=%s err=%v", t.Type(), state.FileID, modeUsed, remoteErr)
+				var startedErr *remoteWorkerStartedError
+				if errors.As(remoteErr, &startedErr) {
+					logger.Error("Video subtitle remote worker failed after job start task_type=%s file_id=%d mode=%s err=%v", t.Type(), state.FileID, modeUsed, remoteErr)
+					return task.StatusError, wrapVideoTaskErr(remoteErr)
+				}
+				logger.Warning("Video subtitle remote worker failed before job start, fallback to local ffmpeg task_type=%s file_id=%d mode=%s err=%v", t.Type(), state.FileID, modeUsed, remoteErr)
 			}
 		}
 	}
