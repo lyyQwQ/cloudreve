@@ -185,6 +185,7 @@ func TestVideoTaskProgressShapeIncludesRemoteWorkerPhases(t *testing.T) {
 		WorkerTransferProgress:  42.4,
 		WorkerTranscodeProgress: 100,
 		WorkerOutputSize:        2048,
+		WorkerStartedAt:         1714219200,
 	})
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
@@ -210,6 +211,9 @@ func TestVideoTaskProgressShapeIncludesRemoteWorkerPhases(t *testing.T) {
 	summary := tk.Summarize(nil)
 	if summary.Props["worker_transfer_phase"] != workerTransferPhaseOutputDownload {
 		t.Fatalf("expected worker phase in summary, got %+v", summary.Props)
+	}
+	if summary.Props["worker_started_at"] != int64(1714219200) {
+		t.Fatalf("expected worker started_at in summary, got %+v", summary.Props)
 	}
 }
 

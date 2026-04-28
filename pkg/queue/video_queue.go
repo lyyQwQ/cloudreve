@@ -427,11 +427,12 @@ func (t *VideoSubtitleBurnTask) Summarize(_ hashid.Encoder) *Summary {
 
 	summary.NodeID = state.NodeID
 	summary.Props[SummaryKeyDst] = state.Dst
-	if state.WorkerTransferPhase != "" || state.WorkerTransferProgress > 0 || state.WorkerTranscodeProgress > 0 || state.WorkerOutputSize > 0 {
+	if state.WorkerTransferPhase != "" || state.WorkerTransferProgress > 0 || state.WorkerTranscodeProgress > 0 || state.WorkerOutputSize > 0 || state.WorkerStartedAt > 0 {
 		summary.Props["worker_transfer_phase"] = state.WorkerTransferPhase
 		summary.Props["worker_transfer_progress"] = state.WorkerTransferProgress
 		summary.Props["worker_transcode_progress"] = state.WorkerTranscodeProgress
 		summary.Props["worker_output_size"] = state.WorkerOutputSize
+		summary.Props["worker_started_at"] = state.WorkerStartedAt
 	}
 	return summary
 }
