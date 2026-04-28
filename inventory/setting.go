@@ -629,6 +629,12 @@ var DefaultSettings = map[string]string{
 	"queue_video_process_worker_num":             "1",
 	"video_ffmpeg_threads":                       "1",
 	"video_ffmpeg_nice":                          "10",
+	"video_ffmpeg_worker_enabled":                "0",
+	"video_ffmpeg_worker_endpoint":               "",
+	"video_ffmpeg_worker_api_key":                "",
+	"video_ffmpeg_worker_timeout":                "21600",
+	"video_ffmpeg_worker_poll_interval":          "5",
+	"video_ffmpeg_worker_source_url_ttl":         "1800",
 	"entity_url_default_ttl":                     "86400",
 	"entity_url_cache_margin":                    "600",
 	"media_meta":                                 "1",
@@ -692,8 +698,9 @@ var DefaultSettings = map[string]string{
 }
 
 var RedactedSettings = map[string]struct{}{
-	"encrypt_master_key": {},
-	"secret_key":         {},
+	"encrypt_master_key":          {},
+	"secret_key":                  {},
+	"video_ffmpeg_worker_api_key": {},
 }
 
 func init() {

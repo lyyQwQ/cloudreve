@@ -91,6 +91,15 @@ type (
 	}
 )
 
+type RemoteFFMpegWorker struct {
+	Enabled      bool
+	Endpoint     string
+	APIKey       string
+	Timeout      time.Duration
+	PollInterval time.Duration
+	SourceURLTTL time.Duration
+}
+
 type ThumbEncode struct {
 	Quality int
 	Format  string

@@ -26,4 +26,14 @@ func TestDefaultSettingsVideoFFMpegRuntimeOptions(t *testing.T) {
 	if workerNum != "1" {
 		t.Fatalf("unexpected default queue video process worker number, want=1 got=%q", workerNum)
 	}
+
+	if enabled, ok := DefaultSettings["video_ffmpeg_worker_enabled"]; !ok || enabled != "0" {
+		t.Fatalf("unexpected remote worker enabled default, ok=%v value=%q", ok, enabled)
+	}
+	if timeout, ok := DefaultSettings["video_ffmpeg_worker_timeout"]; !ok || timeout != "21600" {
+		t.Fatalf("unexpected remote worker timeout default, ok=%v value=%q", ok, timeout)
+	}
+	if poll, ok := DefaultSettings["video_ffmpeg_worker_poll_interval"]; !ok || poll != "5" {
+		t.Fatalf("unexpected remote worker poll interval default, ok=%v value=%q", ok, poll)
+	}
 }

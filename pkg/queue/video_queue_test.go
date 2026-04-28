@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +27,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/pkg/conf"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
+	settingpkg "github.com/cloudreve/Cloudreve/v4/pkg/setting"
 )
 
 func TestVideoTaskFactories(t *testing.T) {
@@ -171,6 +174,41 @@ func TestVideoTaskProgressShape(t *testing.T) {
 				t.Fatalf("unexpected progress value: %+v", phase)
 			}
 		})
+	}
+}
+
+func TestVideoTaskProgressShapeIncludesRemoteWorkerPhases(t *testing.T) {
+	stateBytes, err := json.Marshal(&VideoTaskState{
+		FileID:                  17,
+		WorkerTransferPhase:     workerTransferPhaseOutputDownload,
+		WorkerTransferProgress:  42.4,
+		WorkerTranscodeProgress: 100,
+		WorkerOutputSize:        2048,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	tk := NewVideoSubtitleBurnTaskFromModel(&ent.Task{
+		Type:         VideoSubtitleBurnTaskType,
+		Status:       task.StatusProcessing,
+		PublicState:  &types.TaskPublicState{},
+		PrivateState: string(stateBytes),
+	})
+
+	progress := tk.Progress(context.Background())
+	if got := progress[workerProgressTransfer]; got == nil || got.Current != 42 || got.Total != 100 || got.Identifier != workerTransferPhaseOutputDownload {
+		t.Fatalf("unexpected worker transfer progress: %+v", got)
+	}
+	if got := progress[workerProgressTranscode]; got == nil || got.Current != 100 || got.Total != 100 {
+		t.Fatalf("unexpected worker transcode progress: %+v", got)
+	}
+	if got := progress["ffmpeg"]; got != nil {
+		t.Fatalf("worker task should expose transfer/transcode without duplicate ffmpeg progress: %+v", got)
+	}
+
+	summary := tk.Summarize(nil)
+	if summary.Props["worker_transfer_phase"] != workerTransferPhaseOutputDownload {
+		t.Fatalf("expected worker phase in summary, got %+v", summary.Props)
 	}
 }
 
@@ -1165,6 +1203,22 @@ func TestEscapeFFMpegSubtitlePath_QuotedValueParsesWithFFMpeg(t *testing.T) {
 	}
 }
 
+func TestReadFFMpegProgressOutputAcceptsOutTimeMS(t *testing.T) {
+	var got []float64
+	progressEnd, err := readFFMpegProgressOutput(strings.NewReader("out_time_ms=5000000\nprogress=end\n"), 10, func(pct float64) {
+		got = append(got, pct)
+	})
+	if err != nil {
+		t.Fatalf("readFFMpegProgressOutput: %v", err)
+	}
+	if !progressEnd {
+		t.Fatalf("expected progress end")
+	}
+	if len(got) != 1 || got[0] != 50 {
+		t.Fatalf("unexpected progress values: %#v", got)
+	}
+}
+
 func TestRunSubtitleBurnFFMpeg_DisablesThreadsAndNiceWhenZero(t *testing.T) {
 	dep, _, _ := newVideoTaskTestFixture(t)
 	setVideoFFMpegRuntimeOptions(t, dep, 0, 0)
@@ -1240,5 +1294,134 @@ func TestRunSubtitleBurnFFMpeg_AppendsVBVArgsWhenBitrateProvided(t *testing.T) {
 	}
 	if !strings.Contains(ffmpegArgs, "-bufsize 4000000") {
 		t.Fatalf("expected -bufsize to be injected, args=%q", ffmpegArgs)
+	}
+}
+
+func TestShouldUseRemoteSubtitleBurnSelection(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "movie.mp4")
+	if err := os.WriteFile(input, []byte("video"), 0600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	cfg := &settingpkg.RemoteFFMpegWorker{Enabled: true, Endpoint: "https://worker.example.com", APIKey: "secret"}
+	idx := 2
+	if !shouldUseRemoteSubtitleBurn(input, &VideoSubtitleOption{Mode: VideoSubtitleModeEmbedded, EmbeddedIndex: &idx}, VideoSubtitleModeEmbedded, cfg) {
+		t.Fatalf("expected embedded mode to use remote worker")
+	}
+	if shouldUseRemoteSubtitleBurn(input, &VideoSubtitleOption{Mode: VideoSubtitleModeExternal, ExternalName: "movie.srt"}, VideoSubtitleModeExternal, cfg) {
+		t.Fatalf("expected external mode to stay local")
+	}
+	if shouldUseRemoteSubtitleBurn(input, nil, VideoSubtitleModeEmbedded, cfg) {
+		t.Fatalf("expected auto mode without explicit embedded index to stay local")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "movie.srt"), []byte("subtitle"), 0600); err != nil {
+		t.Fatalf("write subtitle: %v", err)
+	}
+	if shouldUseRemoteSubtitleBurn(input, nil, VideoSubtitleModeEmbedded, cfg) {
+		t.Fatalf("expected auto mode with external subtitles to stay local")
+	}
+	if shouldUseRemoteSubtitleBurn(input, &VideoSubtitleOption{Mode: VideoSubtitleModeEmbedded, EmbeddedIndex: &idx}, VideoSubtitleModeEmbedded, &settingpkg.RemoteFFMpegWorker{}) {
+		t.Fatalf("expected disabled worker to stay local")
+	}
+}
+
+func TestPollRemoteWorkerJobRejectsUnknownStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("unexpected authorization header: %q", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"job_id":"job-1","status":"paused"}`))
+	}))
+	defer server.Close()
+
+	taskRef := NewVideoSubtitleBurnTaskFromModel(&ent.Task{
+		Type:         VideoSubtitleBurnTaskType,
+		Status:       task.StatusProcessing,
+		PublicState:  &types.TaskPublicState{},
+		PrivateState: `{"file_id":1}`,
+	})
+	cfg := &settingpkg.RemoteFFMpegWorker{Endpoint: server.URL, APIKey: "secret"}
+	if _, err := pollRemoteWorkerJob(context.Background(), taskRef, cfg, "job-1"); err == nil || !strings.Contains(err.Error(), "unknown status") {
+		t.Fatalf("expected unknown status error, got %v", err)
+	}
+}
+
+func TestDownloadRemoteWorkerOutputResumesPartFile(t *testing.T) {
+	output := []byte("0123456789")
+	var rangeHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("unexpected authorization header: %q", r.Header.Get("Authorization"))
+		}
+		switch r.Method {
+		case http.MethodHead:
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", strconv.Itoa(len(output)))
+			return
+		case http.MethodGet:
+			rangeHeader = r.Header.Get("Range")
+			w.Header().Set("Accept-Ranges", "bytes")
+			if rangeHeader == "bytes=4-" {
+				w.Header().Set("Content-Range", "bytes 4-9/10")
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = w.Write(output[4:])
+				return
+			}
+			w.Header().Set("Content-Length", strconv.Itoa(len(output)))
+			_, _ = w.Write(output)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+
+	taskRef := NewVideoSubtitleBurnTaskFromModel(&ent.Task{
+		Type:         VideoSubtitleBurnTaskType,
+		Status:       task.StatusProcessing,
+		PublicState:  &types.TaskPublicState{},
+		PrivateState: `{"file_id":1}`,
+	})
+	outPath := filepath.Join(t.TempDir(), "remote-output.mp4")
+	if err := os.WriteFile(outPath+".part", output[:4], 0600); err != nil {
+		t.Fatalf("write part: %v", err)
+	}
+
+	cfg := &settingpkg.RemoteFFMpegWorker{Endpoint: server.URL, APIKey: "secret"}
+	if err := downloadRemoteWorkerOutput(context.Background(), taskRef, cfg, "job-1", outPath, int64(len(output))); err != nil {
+		t.Fatalf("downloadRemoteWorkerOutput: %v", err)
+	}
+	if rangeHeader != "bytes=4-" {
+		t.Fatalf("expected resume range bytes=4-, got %q", rangeHeader)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != string(output) {
+		t.Fatalf("output mismatch: %q", got)
+	}
+	if _, err := os.Stat(outPath + ".part"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("part file should be renamed, stat err=%v", err)
+	}
+
+	state, err := ParseVideoTaskState(taskRef.State())
+	if err != nil {
+		t.Fatalf("ParseVideoTaskState: %v", err)
+	}
+	if state.WorkerTransferPhase != workerTransferPhaseOutputDownload || state.WorkerTransferProgress != 100 {
+		t.Fatalf("unexpected worker progress state: %+v", state)
+	}
+}
+
+func TestRedactRemoteWorkerTextRemovesSensitiveValues(t *testing.T) {
+	cfg := &settingpkg.RemoteFFMpegWorker{APIKey: "secret-token"}
+	input := "Authorization: Bearer secret-token failed https://cloudreve.example.com/api/v4/video/worker/source/1?signature=abc123&file_id=2"
+	got := redactRemoteWorkerText(cfg, input)
+	if strings.Contains(got, "secret-token") || strings.Contains(got, "abc123") || strings.Contains(got, "file_id=2") {
+		t.Fatalf("sensitive value was not redacted: %s", got)
+	}
+	if !strings.Contains(got, "REDACTED") {
+		t.Fatalf("expected redaction marker, got %s", got)
 	}
 }

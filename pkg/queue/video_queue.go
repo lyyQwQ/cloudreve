@@ -54,6 +54,11 @@ const (
 	tempPathSettingName    = "temp_path"
 	tempPathSettingDefault = "temp"
 
+	workerTransferPhaseSourceDownload = "source_download"
+	workerTransferPhaseOutputDownload = "output_download"
+	workerProgressTransfer            = "worker_transfer"
+	workerProgressTranscode           = "worker_transcode"
+
 	subtitleStyle1080p        = "FontSize=22,MarginV=28,Outline=0.3,Shadow=1"
 	subtitleStyle720p         = "FontSize=18,MarginV=20,Outline=0.3,Shadow=1"
 	subtitleStyleHeightCutoff = 900
@@ -77,6 +82,15 @@ type VideoTaskState struct {
 	ProgressTotal   int64                `json:"progress_total,omitempty"`
 	Duration        float64              `json:"duration,omitempty"`
 	FFmpegProgress  float64              `json:"ffmpeg_progress,omitempty"`
+
+	WorkerJobID             string  `json:"worker_job_id,omitempty"`
+	WorkerTransferPhase     string  `json:"worker_transfer_phase,omitempty"`
+	WorkerTransferProgress  float64 `json:"worker_transfer_progress,omitempty"`
+	WorkerTranscodeProgress float64 `json:"worker_transcode_progress,omitempty"`
+	WorkerDownloadedBytes   int64   `json:"worker_downloaded_bytes,omitempty"`
+	WorkerTotalBytes        int64   `json:"worker_total_bytes,omitempty"`
+	WorkerOutputSize        int64   `json:"worker_output_size,omitempty"`
+	WorkerStartedAt         int64   `json:"worker_started_at,omitempty"`
 }
 
 func ParseVideoTaskState(state string) (*VideoTaskState, error) {
@@ -226,10 +240,34 @@ func (t *VideoSubtitleBurnTask) Do(ctx context.Context) (task.Status, error) {
 		onProgress = nil
 	}
 	bitrate := resolveBitrate(probePayload)
-	ffmpegStderr, err := runSubtitleBurnFFMpeg(ctx, input, filterArg, outputPath, state.Duration, bitrate, onProgress)
-	if err != nil {
-		logger.Error("Video subtitle ffmpeg failed task_type=%s file_id=%d mode=%s stderr=%s err=%v", t.Type(), state.FileID, modeUsed, ffmpegStderr, err)
-		return task.StatusError, wrapVideoTaskErr(err)
+	remoteDone := false
+	if remoteCfg := loadRemoteFFMpegWorkerConfig(ctx); shouldUseRemoteSubtitleBurn(input, state.Subtitle, modeUsed, remoteCfg) {
+		embeddedIndex := remoteSubtitleEmbeddedIndex(state.Subtitle)
+		state.WorkerStartedAt = time.Now().Unix()
+		state.WorkerTransferPhase = workerTransferPhaseSourceDownload
+		t.persistState(state)
+
+		sourceURL, sourceErr := buildRemoteFFMpegWorkerSourceURL(ctx, t, fileModel, remoteCfg)
+		if sourceErr != nil {
+			logger.Warning("Video subtitle remote worker source url unavailable task_type=%s file_id=%d err=%v", t.Type(), state.FileID, sourceErr)
+		} else {
+			remoteErr := runRemoteSubtitleBurn(ctx, t, remoteCfg, sourceURL, embeddedIndex, state.Duration, bitrate, outputPath)
+			if remoteErr == nil {
+				remoteDone = true
+			} else if ctx.Err() != nil {
+				return task.StatusError, wrapVideoTaskErr(remoteErr)
+			} else {
+				logger.Warning("Video subtitle remote worker failed, fallback to local ffmpeg task_type=%s file_id=%d mode=%s err=%v", t.Type(), state.FileID, modeUsed, remoteErr)
+			}
+		}
+	}
+
+	if !remoteDone {
+		ffmpegStderr, err := runSubtitleBurnFFMpeg(ctx, input, filterArg, outputPath, state.Duration, bitrate, onProgress)
+		if err != nil {
+			logger.Error("Video subtitle ffmpeg failed task_type=%s file_id=%d mode=%s stderr=%s err=%v", t.Type(), state.FileID, modeUsed, ffmpegStderr, err)
+			return task.StatusError, wrapVideoTaskErr(err)
+		}
 	}
 
 	t.updateProgress(3, 4)
@@ -338,7 +376,8 @@ func buildVideoTaskProgress(taskType string, state string) Progresses {
 			progress.Current = parsed.ProgressCurrent
 		}
 
-		if parsed.Duration > 0 {
+		hasWorkerProgress := parsed.WorkerTransferPhase != "" || parsed.WorkerTransferProgress > 0 || parsed.WorkerTranscodeProgress > 0
+		if parsed.Duration > 0 && !hasWorkerProgress {
 			pct := parsed.FFmpegProgress
 			if pct < 0 {
 				pct = 0
@@ -347,6 +386,18 @@ func buildVideoTaskProgress(taskType string, state string) Progresses {
 				pct = 100
 			}
 			res["ffmpeg"] = &Progress{Total: 100, Current: int64(pct + 0.5), Identifier: strconv.Itoa(parsed.FileID)}
+		}
+		if hasWorkerProgress {
+			res[workerProgressTransfer] = &Progress{
+				Total:      100,
+				Current:    int64(clampFFMpegProgress(parsed.WorkerTransferProgress) + 0.5),
+				Identifier: parsed.WorkerTransferPhase,
+			}
+			res[workerProgressTranscode] = &Progress{
+				Total:      100,
+				Current:    int64(clampFFMpegProgress(parsed.WorkerTranscodeProgress) + 0.5),
+				Identifier: strconv.Itoa(parsed.FileID),
+			}
 		}
 	}
 
@@ -371,6 +422,12 @@ func (t *VideoSubtitleBurnTask) Summarize(_ hashid.Encoder) *Summary {
 
 	summary.NodeID = state.NodeID
 	summary.Props[SummaryKeyDst] = state.Dst
+	if state.WorkerTransferPhase != "" || state.WorkerTransferProgress > 0 || state.WorkerTranscodeProgress > 0 || state.WorkerOutputSize > 0 {
+		summary.Props["worker_transfer_phase"] = state.WorkerTransferPhase
+		summary.Props["worker_transfer_progress"] = state.WorkerTransferProgress
+		summary.Props["worker_transcode_progress"] = state.WorkerTranscodeProgress
+		summary.Props["worker_output_size"] = state.WorkerOutputSize
+	}
 	return summary
 }
 
@@ -1148,7 +1205,7 @@ func readFFMpegProgressOutput(r io.Reader, duration float64, onProgress func(flo
 		}
 
 		switch strings.TrimSpace(key) {
-		case "out_time_us":
+		case "out_time_us", "out_time_ms":
 			if duration <= 0 || onProgress == nil {
 				continue
 			}

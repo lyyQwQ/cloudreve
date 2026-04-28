@@ -69,7 +69,11 @@ func NewEnvOverrideStore(next SettingStoreAdapter, l logging.Logger) SettingStor
 		if strings.HasPrefix(kv[0], EnvSettingOverwritePrefix) {
 			key := strings.TrimPrefix(kv[0], EnvSettingOverwritePrefix)
 			defaults[key] = kv[1]
-			l.Info("Override setting %q with value %q from environment", key, kv[1])
+			displayValue := kv[1]
+			if isSensitiveSettingName(key) {
+				displayValue = "REDACTED"
+			}
+			l.Info("Override setting %q with value %q from environment", key, displayValue)
 		}
 	}
 
@@ -77,6 +81,14 @@ func NewEnvOverrideStore(next SettingStoreAdapter, l logging.Logger) SettingStor
 		settings: defaults,
 		next:     next,
 	}
+}
+
+func isSensitiveSettingName(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "api_key") ||
+		strings.Contains(lower, "secret") ||
+		strings.Contains(lower, "token") ||
+		strings.Contains(lower, "password")
 }
 
 type dbSettingStore struct {

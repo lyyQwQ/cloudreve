@@ -215,6 +215,11 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 	r.GET("manifest.json", controllers.Manifest)
 
 	noAuth := r.Group(constants.APIPrefix)
+	workerSource := noAuth.Group("video/worker")
+	{
+		workerSource.GET("source/:taskId", videosvc.ServeWorkerSource)
+		workerSource.HEAD("source/:taskId", videosvc.ServeWorkerSource)
+	}
 	wopi := noAuth.Group("file/wopi", middleware.HashID(hashid.FileID), middleware.ViewerSessionValidation())
 	{
 		// 获取文件信息

@@ -126,6 +126,7 @@ type (
 		FFMpegPath(ctx context.Context) string
 		VideoFFMpegThreads(ctx context.Context) int
 		VideoFFMpegNice(ctx context.Context) int
+		RemoteFFMpegWorker(ctx context.Context) *RemoteFFMpegWorker
 		// FFMpegThumbGeneratorEnabled returns true if ffmpeg thumb generator is enabled.
 		FFMpegThumbGeneratorEnabled(ctx context.Context) bool
 		// FFMpegThumbExts returns the supported extensions of ffmpeg thumb generator.
@@ -457,6 +458,17 @@ func (s *settingProvider) VideoFFMpegThreads(ctx context.Context) int {
 
 func (s *settingProvider) VideoFFMpegNice(ctx context.Context) int {
 	return s.getInt(ctx, "video_ffmpeg_nice", 10)
+}
+
+func (s *settingProvider) RemoteFFMpegWorker(ctx context.Context) *RemoteFFMpegWorker {
+	return &RemoteFFMpegWorker{
+		Enabled:      s.getBoolean(ctx, "video_ffmpeg_worker_enabled", false),
+		Endpoint:     strings.TrimRight(strings.TrimSpace(s.getString(ctx, "video_ffmpeg_worker_endpoint", "")), "/"),
+		APIKey:       strings.TrimSpace(s.getString(ctx, "video_ffmpeg_worker_api_key", "")),
+		Timeout:      time.Duration(s.getInt(ctx, "video_ffmpeg_worker_timeout", 21600)) * time.Second,
+		PollInterval: time.Duration(s.getInt(ctx, "video_ffmpeg_worker_poll_interval", 5)) * time.Second,
+		SourceURLTTL: time.Duration(s.getInt(ctx, "video_ffmpeg_worker_source_url_ttl", 1800)) * time.Second,
+	}
 }
 
 func (s *settingProvider) FFMpegThumbGeneratorEnabled(ctx context.Context) bool {

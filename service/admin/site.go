@@ -190,6 +190,12 @@ type (
 	GetSettingParamCtx struct{}
 )
 
+const (
+	videoFFMpegWorkerAPIKeySetting      = "video_ffmpeg_worker_api_key"
+	videoFFMpegWorkerAPIKeySetSetting   = "video_ffmpeg_worker_api_key_set"
+	videoFFMpegWorkerAPIKeyClearSetting = "video_ffmpeg_worker_api_key_clear"
+)
+
 func (s *GetSettingService) GetSetting(c *gin.Context) (map[string]string, error) {
 	dep := dependency.FromContext(c)
 	res, err := dep.SettingClient().Gets(c, lo.Filter(s.Keys, func(item string, index int) bool {
@@ -198,6 +204,17 @@ func (s *GetSettingService) GetSetting(c *gin.Context) (map[string]string, error
 	}))
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeDBError, "Failed to get settings", err)
+	}
+
+	if hasSettingKey(s.Keys, videoFFMpegWorkerAPIKeySetting) || hasSettingKey(s.Keys, videoFFMpegWorkerAPIKeySetSetting) || hasSettingKey(s.Keys, videoFFMpegWorkerAPIKeyClearSetting) {
+		apiKey, _ := dep.SettingClient().Get(c, videoFFMpegWorkerAPIKeySetting)
+		res[videoFFMpegWorkerAPIKeySetting] = ""
+		res[videoFFMpegWorkerAPIKeyClearSetting] = "0"
+		if strings.TrimSpace(apiKey) == "" {
+			res[videoFFMpegWorkerAPIKeySetSetting] = "0"
+		} else {
+			res[videoFFMpegWorkerAPIKeySetSetting] = "1"
+		}
 	}
 
 	return res, nil
@@ -271,6 +288,7 @@ func (s *SetSettingService) SetSetting(c *gin.Context) (map[string]string, error
 	dep := dependency.FromContext(c)
 	kv := dep.KV()
 	settingClient := dep.SettingClient()
+	apiKeyClearRequested := normalizeSettingPatch(s.Settings)
 
 	// Preprocess settings
 	allPreprocessors := make(map[string]SettingPreProcessor)
@@ -325,7 +343,60 @@ func (s *SetSettingService) SetSetting(c *gin.Context) (map[string]string, error
 		}
 	}
 
-	return s.Settings, nil
+	res := redactedSettingResponse(s.Settings)
+	if apiKeyClearRequested {
+		res[videoFFMpegWorkerAPIKeyClearSetting] = "0"
+		res[videoFFMpegWorkerAPIKeySetSetting] = "0"
+	}
+	return res, nil
+}
+
+func hasSettingKey(keys []string, name string) bool {
+	return lo.ContainsBy(keys, func(item string) bool {
+		return strings.EqualFold(item, name)
+	})
+}
+
+func normalizeSettingPatch(settings map[string]string) bool {
+	clearRequested := isTruthySettingValue(settings[videoFFMpegWorkerAPIKeyClearSetting])
+	delete(settings, videoFFMpegWorkerAPIKeyClearSetting)
+	delete(settings, videoFFMpegWorkerAPIKeySetSetting)
+	if clearRequested {
+		settings[videoFFMpegWorkerAPIKeySetting] = ""
+		return true
+	}
+	if value, ok := settings[videoFFMpegWorkerAPIKeySetting]; ok && strings.TrimSpace(value) == "" {
+		delete(settings, videoFFMpegWorkerAPIKeySetting)
+	}
+	return false
+}
+
+func isTruthySettingValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func redactedSettingResponse(settings map[string]string) map[string]string {
+	res := make(map[string]string, len(settings)+1)
+	for key, value := range settings {
+		res[key] = value
+	}
+
+	if apiKey, ok := res[videoFFMpegWorkerAPIKeySetting]; ok {
+		res[videoFFMpegWorkerAPIKeySetting] = ""
+		res[videoFFMpegWorkerAPIKeyClearSetting] = "0"
+		if strings.TrimSpace(apiKey) == "" {
+			res[videoFFMpegWorkerAPIKeySetSetting] = "0"
+		} else {
+			res[videoFFMpegWorkerAPIKeySetSetting] = "1"
+		}
+	}
+
+	return res
 }
 
 func siteUrlPreProcessor(ctx context.Context, settings map[string]string) error {
