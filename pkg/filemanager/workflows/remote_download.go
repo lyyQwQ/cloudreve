@@ -75,6 +75,8 @@ const (
 	SummaryKeySrcMultiple    = "src_multiple"
 	SummaryKeySrcDstPolicyID = "dst_policy_id"
 	SummaryKeyFailed         = "failed"
+
+	remoteDownloadAwaitSeedingMinPollInterval = 5 * time.Minute
 )
 
 func init() {
@@ -281,12 +283,16 @@ func (m *RemoteDownloadTask) createDownloadTask(ctx context.Context, dep depende
 }
 
 func (m *RemoteDownloadTask) monitor(ctx context.Context, dep dependency.Dep) (task.Status, error) {
-	resumeAfter := time.Duration(m.node.Settings(ctx).Interval) * time.Second
+	resumeAfter := m.monitorPollInterval(ctx)
 
 	// Update task status
 	status, err := m.d.Info(ctx, m.state.Handle)
 	if err != nil {
 		if errors.Is(err, downloader.ErrTaskNotFount) && m.state.Status != nil {
+			if m.state.Phase == RemoteDownloadTaskPhaseAwaitSeeding {
+				m.l.Info("seeding task not found, consider it as completed")
+				return task.StatusCompleted, nil
+			}
 			// If task is not found, but it previously existed, consider it as canceled
 			m.l.Warning("task not found, consider it as canceled")
 			return task.StatusCanceled, nil
@@ -325,8 +331,8 @@ func (m *RemoteDownloadTask) monitor(ctx context.Context, dep dependency.Dep) (t
 	m.l.Debug("Monitor %q task state: %s", status.Name, status.State)
 	switch status.State {
 	case downloader.StatusSeeding:
-		m.l.Info("Download task seeding")
 		if m.state.Phase == RemoteDownloadTaskPhaseMonitor {
+			m.l.Info("Download task seeding")
 			// Not transferred
 			m.state.Phase = RemoteDownloadTaskPhaseTransfer
 			return task.StatusSuspending, nil
@@ -335,7 +341,14 @@ func (m *RemoteDownloadTask) monitor(ctx context.Context, dep dependency.Dep) (t
 			m.l.Info("Download task seeding skipped.")
 			return task.StatusCompleted, nil
 		} else {
+			if cleaned, err := m.cleanupOrphanSeeding(ctx, dep); err != nil {
+				m.l.Warning("failed to cleanup orphan seeding task: %s", err)
+			} else if cleaned {
+				return task.StatusCompleted, nil
+			}
+
 			// Still seeding
+			m.l.Debug("Download task still seeding")
 			m.ResumeAfter(resumeAfter)
 			return task.StatusSuspending, nil
 		}
@@ -358,6 +371,15 @@ func (m *RemoteDownloadTask) monitor(ctx context.Context, dep dependency.Dep) (t
 
 	m.ResumeAfter(resumeAfter)
 	return task.StatusSuspending, nil
+}
+
+func (m *RemoteDownloadTask) monitorPollInterval(ctx context.Context) time.Duration {
+	interval := time.Duration(m.node.Settings(ctx).Interval) * time.Second
+	if m.state != nil && m.state.Phase == RemoteDownloadTaskPhaseAwaitSeeding && interval < remoteDownloadAwaitSeedingMinPollInterval {
+		return remoteDownloadAwaitSeedingMinPollInterval
+	}
+
+	return interval
 }
 
 func (m *RemoteDownloadTask) slaveTransfer(ctx context.Context, dep dependency.Dep) (task.Status, error) {
@@ -697,6 +719,164 @@ func (m *RemoteDownloadTask) CancelDownload(ctx context.Context) error {
 	}
 
 	return d.Cancel(ctx, state.Handle)
+}
+
+func (m *RemoteDownloadTask) TransferredOutputURIs() ([]*fs.URI, error) {
+	state, err := m.stateForRead()
+	if err != nil {
+		return nil, err
+	}
+
+	return transferredOutputURIsFromState(state)
+}
+
+func (m *RemoteDownloadTask) AffectedByDeletedURIs(deleted []*fs.URI, hasher hashid.Encoder, ownerID int) (bool, error) {
+	outputs, err := m.TransferredOutputURIs()
+	if err != nil {
+		return false, err
+	}
+	if len(outputs) == 0 {
+		return false, nil
+	}
+
+	ownerHash := ""
+	if hasher != nil {
+		ownerHash = hashid.EncodeUserID(hasher, ownerID)
+	}
+	for _, output := range outputs {
+		for _, removed := range deleted {
+			if output.EqualOrIsDescendantOf(removed, ownerHash) {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+func (m *RemoteDownloadTask) TransferredOutputsExist(ctx context.Context, dep dependency.Dep) (bool, error) {
+	outputs, err := m.TransferredOutputURIs()
+	if err != nil {
+		return false, err
+	}
+	if len(outputs) == 0 {
+		return true, nil
+	}
+
+	owner := m.Owner()
+	if owner == nil {
+		return true, fmt.Errorf("download task owner is not loaded")
+	}
+
+	fm := manager.NewFileManager(dep, owner)
+	defer fm.Recycle()
+	for _, output := range outputs {
+		if _, err := fm.Get(ctx, output); err == nil {
+			return true, nil
+		} else if !isTransferredOutputMissing(err) {
+			return true, err
+		}
+	}
+
+	return false, nil
+}
+
+func (m *RemoteDownloadTask) CleanupOrphanSeeding(ctx context.Context, dep dependency.Dep) (bool, error) {
+	return m.cleanupOrphanSeeding(ctx, dep)
+}
+
+func (m *RemoteDownloadTask) cleanupOrphanSeeding(ctx context.Context, dep dependency.Dep) (bool, error) {
+	state, err := m.stateForRead()
+	if err != nil {
+		return false, err
+	}
+	if state.Phase != RemoteDownloadTaskPhaseAwaitSeeding {
+		return false, nil
+	}
+
+	outputs, err := transferredOutputURIsFromState(state)
+	if err != nil {
+		return false, err
+	}
+	if len(outputs) == 0 {
+		return false, nil
+	}
+
+	exists, err := m.TransferredOutputsExist(ctx, dep)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return false, nil
+	}
+
+	if err := m.CancelDownload(ctx); err != nil && !errors.Is(err, downloader.ErrTaskNotFount) {
+		return false, err
+	}
+
+	return true, nil
+}
+
+func (m *RemoteDownloadTask) stateForRead() (*RemoteDownloadTaskState, error) {
+	m.runtimeMu.RLock()
+	state := m.state
+	m.runtimeMu.RUnlock()
+	if state != nil {
+		return state, nil
+	}
+
+	return m.stateFromModel()
+}
+
+func transferredOutputURIsFromState(state *RemoteDownloadTaskState) ([]*fs.URI, error) {
+	if state == nil || state.Phase != RemoteDownloadTaskPhaseAwaitSeeding || state.Dst == "" {
+		return nil, nil
+	}
+
+	if state.SlaveUploadState != nil && len(state.SlaveUploadState.Files) > 0 {
+		outputs := make([]*fs.URI, 0, len(state.SlaveUploadState.Files))
+		for _, f := range state.SlaveUploadState.Files {
+			if f.Uri == nil {
+				return nil, nil
+			}
+			outputs = append(outputs, f.Uri)
+		}
+		return outputs, nil
+	}
+
+	if state.Status == nil || len(state.Status.Files) == 0 || len(state.Transferred) == 0 {
+		return nil, nil
+	}
+
+	dstUri, err := fs.NewUriFromString(state.Dst)
+	if err != nil {
+		return nil, err
+	}
+
+	outputs := make([]*fs.URI, 0, len(state.Transferred))
+	for _, f := range state.Status.Files {
+		if !f.Selected {
+			continue
+		}
+		if _, ok := state.Transferred[f.Index]; !ok {
+			continue
+		}
+		outputs = append(outputs, dstUri.JoinRaw(sanitizeFileName(f.Name)))
+	}
+
+	return outputs, nil
+}
+
+func isTransferredOutputMissing(err error) bool {
+	var appErr serializer.AppError
+	if errors.As(err, &appErr) {
+		switch appErr.ErrCode() {
+		case serializer.CodeParentNotExist, serializer.CodeFileDeleted, serializer.CodeNotFound, serializer.CodeFileNotFound, serializer.CodeEntityNotExist:
+			return true
+		}
+	}
+
+	return false
 }
 
 func (m *RemoteDownloadTask) Summarize(hasher hashid.Encoder) *queue.Summary {

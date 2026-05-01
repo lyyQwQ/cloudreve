@@ -556,6 +556,10 @@ func (s *DeleteFileService) Delete(c *gin.Context) error {
 		return fmt.Errorf("failed to delete file: %w", err)
 	}
 
+	if err := CleanupRemoteDownloadOutputsAfterDelete(c, uris); err != nil {
+		dep.Logger().Warning("failed to cleanup remote download outputs after file delete: %s", err)
+	}
+
 	return nil
 }
 

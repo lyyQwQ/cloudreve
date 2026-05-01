@@ -1,8 +1,8 @@
 package explorer
 
 import (
+	"context"
 	"encoding/gob"
-	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
@@ -15,6 +15,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/fs/dbfs"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/manager"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/workflows"
+	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/queue"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
 	"github.com/gin-gonic/gin"
@@ -431,6 +432,90 @@ func CancelDownloadTask(c *gin.Context, taskID int) error {
 	}
 
 	return serializer.NewError(serializer.CodeNotFound, "Task not found", nil)
+}
+
+func CleanupRemoteDownloadOutputsAfterDelete(c *gin.Context, deleted []*fs.URI) error {
+	dep := dependency.FromContext(c)
+	u := inventory.UserFromContext(c)
+	if u == nil || len(deleted) == 0 {
+		return nil
+	}
+
+	listCtx := context.WithValue(c, inventory.LoadTaskUser{}, true)
+	res, err := dep.TaskClient().List(listCtx, &inventory.ListTaskArgs{
+		PaginationArgs: &inventory.PaginationArgs{PageSize: intsets.MaxInt},
+		Types:          []string{queue.RemoteDownloadTaskType},
+		Status:         []task.Status{task.StatusQueued, task.StatusProcessing, task.StatusSuspending},
+		UserID:         u.ID,
+	})
+	if err != nil {
+		return err
+	}
+
+	registry := dep.TaskRegistry()
+	for _, model := range res.Tasks {
+		liveTask, found := registry.Get(model.ID)
+		if !found {
+			var restoreErr error
+			liveTask, restoreErr = queue.NewTaskFromModel(model)
+			if restoreErr != nil {
+				dep.Logger().Warning("failed to restore remote download task %d for delete cleanup: %s", model.ID, restoreErr)
+				continue
+			}
+		}
+		if liveTask.Owner() == nil {
+			restoredTask, restoreErr := queue.NewTaskFromModel(model)
+			if restoreErr != nil {
+				dep.Logger().Warning("failed to restore remote download task %d owner for delete cleanup: %s", model.ID, restoreErr)
+				continue
+			}
+			liveTask = restoredTask
+		}
+		if owner := liveTask.Owner(); owner == nil || owner.ID != u.ID {
+			continue
+		}
+
+		remoteTask, ok := liveTask.(*workflows.RemoteDownloadTask)
+		if !ok {
+			continue
+		}
+
+		affected, err := remoteTask.AffectedByDeletedURIs(deleted, dep.HashIDEncoder(), u.ID)
+		if err != nil {
+			dep.Logger().Warning("failed to match remote download task %d for delete cleanup: %s", model.ID, err)
+			continue
+		}
+		if !affected {
+			continue
+		}
+
+		cleaned, err := remoteTask.CleanupOrphanSeeding(c, dep)
+		if err != nil {
+			dep.Logger().Warning("failed to cleanup remote download task %d after output delete: %s", model.ID, err)
+			continue
+		}
+		if !cleaned {
+			continue
+		}
+
+		taskModel := remoteTask.Model()
+		if taskModel == nil {
+			taskModel = model
+		}
+		args := &inventory.TaskArgs{Status: task.StatusCompleted, PublicState: taskModel.PublicState, PrivateState: taskModel.PrivateState}
+		if args.PublicState == nil {
+			args.PublicState = &types.TaskPublicState{}
+		}
+		updated, err := dep.TaskClient().Update(c, model, args)
+		if err != nil {
+			dep.Logger().Warning("failed to complete remote download task %d after output delete: %s", model.ID, err)
+			continue
+		}
+		remoteTask.OnPersisted(updated)
+		registry.Delete(model.ID)
+	}
+
+	return nil
 }
 
 func CancelVideoTask(c *gin.Context, taskID int) error {

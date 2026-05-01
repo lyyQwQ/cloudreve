@@ -14,6 +14,8 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/boolset"
 	"github.com/cloudreve/Cloudreve/v4/pkg/conf"
+	"github.com/cloudreve/Cloudreve/v4/pkg/downloader"
+	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/fs"
 	"github.com/cloudreve/Cloudreve/v4/pkg/filemanager/workflows"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
@@ -198,4 +200,147 @@ func TestCancelDownloadTaskPersistsCanceledStatus(t *testing.T) {
 	if _, found := dep.TaskRegistry().Get(model.ID); found {
 		t.Fatal("canceled task should be removed from registry")
 	}
+}
+
+func TestCleanupRemoteDownloadOutputsAfterDeleteCompletesMatchingSeedingTask(t *testing.T) {
+	dep, client, user := newExplorerTestDep(t)
+	defer client.Close()
+
+	output := "cloudreve://my/downloads/movie.mkv"
+	model := createRemoteDownloadTaskForCleanup(t, client, user.ID, nil, []downloader.TaskFile{
+		{Index: 1, Name: "movie.mkv", Selected: true},
+	}, map[int]interface{}{1: nil})
+	deleted, err := fs.NewUriFromString(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CleanupRemoteDownloadOutputsAfterDelete(newExplorerContext(dep, user), []*fs.URI{deleted}); err != nil {
+		t.Fatalf("CleanupRemoteDownloadOutputsAfterDelete: %v", err)
+	}
+
+	persisted, err := client.Task.Get(context.Background(), model.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if persisted.Status != enttask.StatusCompleted {
+		t.Fatalf("persisted status = %q, want %q", persisted.Status, enttask.StatusCompleted)
+	}
+}
+
+func TestCleanupRemoteDownloadOutputsAfterDeleteIgnoresUnrelatedTask(t *testing.T) {
+	dep, client, user := newExplorerTestDep(t)
+	defer client.Close()
+
+	model := createRemoteDownloadTaskForCleanup(t, client, user.ID, nil, []downloader.TaskFile{
+		{Index: 1, Name: "movie.mkv", Selected: true},
+	}, map[int]interface{}{1: nil})
+	deleted, err := fs.NewUriFromString("cloudreve://my/other/movie.mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CleanupRemoteDownloadOutputsAfterDelete(newExplorerContext(dep, user), []*fs.URI{deleted}); err != nil {
+		t.Fatalf("CleanupRemoteDownloadOutputsAfterDelete: %v", err)
+	}
+
+	persisted, err := client.Task.Get(context.Background(), model.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if persisted.Status != enttask.StatusSuspending {
+		t.Fatalf("persisted status = %q, want %q", persisted.Status, enttask.StatusSuspending)
+	}
+}
+
+func TestCleanupRemoteDownloadOutputsAfterDeleteFailureLeavesTaskActive(t *testing.T) {
+	dep, client, user := newExplorerTestDep(t)
+	defer client.Close()
+
+	model := createRemoteDownloadTaskForCleanup(t, client, user.ID, &downloader.TaskHandle{ID: "id", Hash: "hash"}, []downloader.TaskFile{
+		{Index: 1, Name: "movie.mkv", Selected: true},
+	}, map[int]interface{}{1: nil})
+	deleted, err := fs.NewUriFromString("cloudreve://my/downloads/movie.mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CleanupRemoteDownloadOutputsAfterDelete(newExplorerContext(dep, user), []*fs.URI{deleted}); err != nil {
+		t.Fatalf("CleanupRemoteDownloadOutputsAfterDelete: %v", err)
+	}
+
+	persisted, err := client.Task.Get(context.Background(), model.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if persisted.Status != enttask.StatusSuspending {
+		t.Fatalf("persisted status = %q, want %q", persisted.Status, enttask.StatusSuspending)
+	}
+}
+
+func TestCleanupRemoteDownloadOutputsAfterDeleteEnforcesOwner(t *testing.T) {
+	dep, client, user := newExplorerTestDep(t)
+	defer client.Close()
+
+	otherUser, err := client.User.Create().
+		SetEmail("other-owner@example.com").
+		SetNick("other").
+		SetGroupUsers(user.GroupUsers).
+		Save(context.Background())
+	if err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+
+	model := createRemoteDownloadTaskForCleanup(t, client, otherUser.ID, nil, []downloader.TaskFile{
+		{Index: 1, Name: "movie.mkv", Selected: true},
+	}, map[int]interface{}{1: nil})
+	deleted, err := fs.NewUriFromString("cloudreve://my/downloads/movie.mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CleanupRemoteDownloadOutputsAfterDelete(newExplorerContext(dep, user), []*fs.URI{deleted}); err != nil {
+		t.Fatalf("CleanupRemoteDownloadOutputsAfterDelete: %v", err)
+	}
+
+	persisted, err := client.Task.Get(context.Background(), model.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if persisted.Status != enttask.StatusSuspending {
+		t.Fatalf("persisted status = %q, want %q", persisted.Status, enttask.StatusSuspending)
+	}
+}
+
+func createRemoteDownloadTaskForCleanup(t *testing.T, client *ent.Client, ownerID int, handle *downloader.TaskHandle, files []downloader.TaskFile, transferred map[int]interface{}) *ent.Task {
+	t.Helper()
+
+	stateBytes, err := json.Marshal(&workflows.RemoteDownloadTaskState{
+		Dst:    "cloudreve://my/downloads",
+		Handle: handle,
+		Status: &downloader.TaskStatus{
+			Name:  "cleanup",
+			State: downloader.StatusSeeding,
+			Files: files,
+		},
+		Phase:       workflows.RemoteDownloadTaskPhaseAwaitSeeding,
+		Transferred: transferred,
+	})
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+
+	model, err := client.Task.Create().
+		SetType(queue.RemoteDownloadTaskType).
+		SetStatus(enttask.StatusSuspending).
+		SetUserID(ownerID).
+		SetCorrelationID(uuid.Must(uuid.NewV4())).
+		SetPublicState(&types.TaskPublicState{}).
+		SetPrivateState(string(stateBytes)).
+		Save(context.Background())
+	if err != nil {
+		t.Fatalf("create remote download task: %v", err)
+	}
+
+	return model
 }
