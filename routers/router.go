@@ -620,6 +620,10 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 			video.POST("info", videosvc.GetInfo)
 			video.GET("subtitles", videosvc.ListSubtitles)
 			video.POST("subtitle/burn", videosvc.BurnSubtitle)
+			video.POST("batch/subtitle/preflight", videosvc.BatchSubtitlePreflight)
+			video.POST("batch/subtitle/burn", videosvc.BatchSubtitleBurn)
+			video.POST("batch/hls/preflight", videosvc.BatchHLSPreflight)
+			video.POST("batch/hls", videosvc.BatchHLS)
 			video.POST("hls", videosvc.SliceHLS)
 		}
 

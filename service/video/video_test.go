@@ -167,6 +167,10 @@ func newTestRouter(dep dependency.Dep, user *ent.User) *gin.Engine {
 		video.POST("info", GetInfo)
 		video.GET("subtitles", ListSubtitles)
 		video.POST("subtitle/burn", BurnSubtitle)
+		video.POST("batch/subtitle/preflight", BatchSubtitlePreflight)
+		video.POST("batch/subtitle/burn", BatchSubtitleBurn)
+		video.POST("batch/hls/preflight", BatchHLSPreflight)
+		video.POST("batch/hls", BatchHLS)
 		video.POST("hls", SliceHLS)
 	}
 	hls := api.Group("hls")
