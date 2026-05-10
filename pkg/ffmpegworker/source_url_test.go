@@ -55,3 +55,37 @@ func TestSourceURLVerifyExpired(t *testing.T) {
 		t.Fatalf("expected expired token, got %v", err)
 	}
 }
+
+func TestSubtitleURLVerifyBindsSubtitleName(t *testing.T) {
+	base, err := url.Parse("https://cloudreve.example.com")
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	claims := SubtitleURLClaims{TaskID: 12, FileID: 34, EntityID: 56, SubtitleName: "movie.zh.srt", Expires: time.Now().Add(time.Minute).Unix(), Nonce: "nonce"}
+
+	raw, err := BuildSubtitleURL(base, "/api/v4/video/worker/subtitle/12", claims, "secret")
+	if err != nil {
+		t.Fatalf("BuildSubtitleURL: %v", err)
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url.Parse built: %v", err)
+	}
+
+	got, err := VerifySubtitleURL(12, parsed.Query(), "secret", time.Now())
+	if err != nil {
+		t.Fatalf("VerifySubtitleURL: %v", err)
+	}
+	if got.FileID != claims.FileID || got.EntityID != claims.EntityID || got.SubtitleName != claims.SubtitleName || got.Nonce != claims.Nonce {
+		t.Fatalf("claims mismatch: %+v", got)
+	}
+
+	q := parsed.Query()
+	q.Set(QuerySubtitleName, "movie.en.srt")
+	if _, err := VerifySubtitleURL(12, q, "secret", time.Now()); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expected invalid token after subtitle tamper, got %v", err)
+	}
+	if _, err := VerifySubtitleURL(13, parsed.Query(), "secret", time.Now()); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expected invalid token for different task id, got %v", err)
+	}
+}

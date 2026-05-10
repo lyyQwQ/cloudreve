@@ -143,7 +143,7 @@ func newTestDep(t *testing.T, l *memLogger) (dependency.Dep, *ent.Client, *ent.U
 		dependency.WithDbClient(client),
 		dependency.WithConfigProvider(cp),
 		dependency.WithHashIDEncoder(h),
-		dependency.WithSettingClient(&memSettingClient{values: map[string]string{"queue_video_process_worker_num": "2"}}),
+		dependency.WithSettingClient(&memSettingClient{values: map[string]string{"queue_video_process_worker_num": "2", "secret_key": "worker-secret"}}),
 	)
 
 	return dep, client, usr
@@ -164,6 +164,8 @@ func newTestRouter(dep dependency.Dep, user *ent.User) *gin.Engine {
 	api := r.Group("/api/v4")
 	video := api.Group("video")
 	{
+		video.GET("worker/subtitle/:taskId", ServeWorkerSubtitle)
+		video.HEAD("worker/subtitle/:taskId", ServeWorkerSubtitle)
 		video.POST("info", GetInfo)
 		video.GET("subtitles", ListSubtitles)
 		video.POST("subtitle/burn", BurnSubtitle)

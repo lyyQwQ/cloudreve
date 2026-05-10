@@ -1332,8 +1332,8 @@ func TestShouldUseRemoteSubtitleBurnSelection(t *testing.T) {
 	if !shouldUseRemoteSubtitleBurn(input, &VideoSubtitleOption{Mode: VideoSubtitleModeEmbedded, EmbeddedIndex: &idx}, VideoSubtitleModeEmbedded, cfg) {
 		t.Fatalf("expected embedded mode to use remote worker")
 	}
-	if shouldUseRemoteSubtitleBurn(input, &VideoSubtitleOption{Mode: VideoSubtitleModeExternal, ExternalName: "movie.srt"}, VideoSubtitleModeExternal, cfg) {
-		t.Fatalf("expected external mode to stay local")
+	if !shouldUseRemoteSubtitleBurn(input, &VideoSubtitleOption{Mode: VideoSubtitleModeExternal, ExternalName: "movie.srt"}, VideoSubtitleModeExternal, cfg) {
+		t.Fatalf("expected explicit external mode to use remote worker")
 	}
 	if shouldUseRemoteSubtitleBurn(input, nil, VideoSubtitleModeEmbedded, cfg) {
 		t.Fatalf("expected auto mode without explicit embedded index to stay local")
@@ -1346,6 +1346,49 @@ func TestShouldUseRemoteSubtitleBurnSelection(t *testing.T) {
 	}
 	if shouldUseRemoteSubtitleBurn(input, &VideoSubtitleOption{Mode: VideoSubtitleModeEmbedded, EmbeddedIndex: &idx}, VideoSubtitleModeEmbedded, &settingpkg.RemoteFFMpegWorker{}) {
 		t.Fatalf("expected disabled worker to stay local")
+	}
+}
+
+func TestCreateRemoteWorkerJobExternalPayload(t *testing.T) {
+	var gotPath string
+	var gotPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("unexpected authorization header: %q", r.Header.Get("Authorization"))
+		}
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job_id":"job-1","status":"queued"}`))
+	}))
+	defer server.Close()
+
+	cfg := &settingpkg.RemoteFFMpegWorker{Endpoint: server.URL, APIKey: "secret"}
+	jobID, err := createRemoteWorkerJob(context.Background(), cfg, remoteWorkerSubtitleBurnRequest{
+		Mode:         VideoSubtitleModeExternal,
+		SourceURL:    "https://cloudreve.example.com/api/v4/video/worker/source/1?signature=secret",
+		SubtitleURL:  "https://cloudreve.example.com/api/v4/video/worker/subtitle/1?signature=secret",
+		SubtitleName: "movie.zh.srt",
+		Duration:     10,
+		Bitrate:      1000,
+		VideoHeight:  1080,
+	})
+	if err != nil {
+		t.Fatalf("createRemoteWorkerJob: %v", err)
+	}
+	if jobID != "job-1" {
+		t.Fatalf("jobID = %q", jobID)
+	}
+	if gotPath != "/v1/jobs/external-subtitle-burn-url" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotPayload["subtitle_url"] == "" || gotPayload["subtitle_name"] != "movie.zh.srt" || gotPayload["video_height"] != float64(1080) {
+		t.Fatalf("payload = %#v", gotPayload)
+	}
+	if _, ok := gotPayload["embedded_index"]; ok {
+		t.Fatalf("external payload should not include embedded_index: %#v", gotPayload)
 	}
 }
 
@@ -1652,6 +1695,94 @@ func TestVideoSubtitleBurnTask_DoRemoteOutputFailureDoesNotFallbackLocal(t *test
 	}
 }
 
+func TestVideoSubtitleBurnTask_DoExternalSubtitleUsesRemoteWorker(t *testing.T) {
+	output := []byte("remote-mp4")
+	var createPath string
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/") && r.Header.Get("Authorization") != "Bearer secret" {
+			t.Fatalf("unexpected authorization header: %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs/external-subtitle-burn-url":
+			createPath = r.URL.Path
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode payload: %v", err)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job_id":"job-1","status":"queued"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job-1":
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"job_id":"job-1","status":"completed","progress":100,"output_size":%d}`, len(output))))
+		case r.Method == http.MethodHead && r.URL.Path == "/v1/jobs/job-1/output":
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Length", strconv.Itoa(len(output)))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job-1/output":
+			w.Header().Set("Content-Length", strconv.Itoa(len(output)))
+			_, _ = w.Write(output)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dep, user, fileID := newVideoTaskTestFixture(t)
+	dep.settingProvider = settingpkg.NewProvider(&queueTestSettingAdapter{values: map[string]any{
+		"siteURL":                           server.URL,
+		"secret_key":                        "source-secret",
+		"video_ffmpeg_worker_enabled":       "1",
+		"video_ffmpeg_worker_endpoint":      server.URL,
+		"video_ffmpeg_worker_api_key":       "secret",
+		"video_ffmpeg_worker_timeout":       "60",
+		"video_ffmpeg_worker_poll_interval": "0",
+	}})
+
+	fileModel, err := dep.client.File.Get(context.Background(), fileID)
+	if err != nil {
+		t.Fatalf("get file: %v", err)
+	}
+	entityModel, err := dep.client.Entity.Get(context.Background(), fileModel.PrimaryEntity)
+	if err != nil {
+		t.Fatalf("get entity: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(entityModel.Source), "movie.zh.srt"), []byte("subtitle"), 0600); err != nil {
+		t.Fatalf("write subtitle: %v", err)
+	}
+
+	binDir := t.TempDir()
+	ffmpegArgsFile := filepath.Join(t.TempDir(), "ffmpeg_args.txt")
+	prepareFakeFFProbe(t, binDir, `{"streams":[{"codec_type":"video","codec_name":"h264","height":1080}],"format":{"duration":"10","bit_rate":"1000000"}}`, "", 0)
+	prepareFakeFFMpegSuccess(t, binDir, ffmpegArgsFile)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tk, err := NewVideoSubtitleBurnTask(context.Background(), fileID, user, &VideoSubtitleOption{
+		Mode:         VideoSubtitleModeExternal,
+		ExternalName: "movie.zh.srt",
+	})
+	if err != nil {
+		t.Fatalf("NewVideoSubtitleBurnTask: %v", err)
+	}
+
+	status, err := tk.Do(newVideoTaskCtx(dep))
+	if status != task.StatusCompleted || err != nil {
+		t.Fatalf("expected completed, got status=%q err=%v", status, err)
+	}
+	if createPath != "/v1/jobs/external-subtitle-burn-url" {
+		t.Fatalf("create path = %q", createPath)
+	}
+	if payload["subtitle_name"] != "movie.zh.srt" || payload["video_height"] != float64(1080) {
+		t.Fatalf("payload = %#v", payload)
+	}
+	for _, key := range []string{"source_url", "subtitle_url"} {
+		raw, _ := payload[key].(string)
+		if raw == "" || !strings.Contains(raw, "/api/v4/video/worker/") {
+			t.Fatalf("payload %s = %q", key, raw)
+		}
+	}
+	if _, err := os.Stat(ffmpegArgsFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local ffmpeg should not run when external remote worker succeeds, stat err=%v", err)
+	}
+}
+
 func TestRedactRemoteWorkerTextRemovesSensitiveValues(t *testing.T) {
 	cfg := &settingpkg.RemoteFFMpegWorker{APIKey: "secret-token"}
 	input := "Authorization: Bearer secret-token failed https://cloudreve.example.com/api/v4/video/worker/source/1?signature=abc123&file_id=2"
@@ -1667,5 +1798,11 @@ func TestRedactRemoteWorkerTextRemovesSensitiveValues(t *testing.T) {
 	got = redactRemoteWorkerText(cfg, escapedInput)
 	if strings.Contains(got, "secret-token") || strings.Contains(got, "abc123") || strings.Contains(got, "file_id=2") {
 		t.Fatalf("escaped sensitive value was not redacted: %s", got)
+	}
+
+	subtitleInput := "https://cloudreve.example.com/api/v4/video/worker/subtitle/1?signature=abc123&subtitle_name=movie.zh.srt"
+	got = redactRemoteWorkerText(cfg, subtitleInput)
+	if strings.Contains(got, "abc123") || strings.Contains(got, "movie.zh.srt") {
+		t.Fatalf("subtitle url sensitive value was not redacted: %s", got)
 	}
 }

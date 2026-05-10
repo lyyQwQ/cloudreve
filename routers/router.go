@@ -219,6 +219,8 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 	{
 		workerSource.GET("source/:taskId", videosvc.ServeWorkerSource)
 		workerSource.HEAD("source/:taskId", videosvc.ServeWorkerSource)
+		workerSource.GET("subtitle/:taskId", videosvc.ServeWorkerSubtitle)
+		workerSource.HEAD("subtitle/:taskId", videosvc.ServeWorkerSubtitle)
 	}
 	wopi := noAuth.Group("file/wopi", middleware.HashID(hashid.FileID), middleware.ViewerSessionValidation())
 	{

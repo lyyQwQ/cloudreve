@@ -242,7 +242,6 @@ func (t *VideoSubtitleBurnTask) Do(ctx context.Context) (task.Status, error) {
 	bitrate := resolveBitrate(probePayload)
 	remoteDone := false
 	if remoteCfg := loadRemoteFFMpegWorkerConfig(ctx); shouldUseRemoteSubtitleBurn(input, state.Subtitle, modeUsed, remoteCfg) {
-		embeddedIndex := remoteSubtitleEmbeddedIndex(state.Subtitle)
 		state.WorkerStartedAt = time.Now().Unix()
 		state.WorkerTransferPhase = workerTransferPhaseSourceDownload
 		t.persistState(state)
@@ -251,18 +250,37 @@ func (t *VideoSubtitleBurnTask) Do(ctx context.Context) (task.Status, error) {
 		if sourceErr != nil {
 			logger.Warning("Video subtitle remote worker source url unavailable task_type=%s file_id=%d err=%v", t.Type(), state.FileID, sourceErr)
 		} else {
-			remoteErr := runRemoteSubtitleBurn(ctx, t, remoteCfg, sourceURL, embeddedIndex, state.Duration, bitrate, outputPath)
-			if remoteErr == nil {
-				remoteDone = true
-			} else if ctx.Err() != nil {
-				return task.StatusError, wrapVideoTaskErr(remoteErr)
-			} else {
-				var startedErr *remoteWorkerStartedError
-				if errors.As(remoteErr, &startedErr) {
-					logger.Error("Video subtitle remote worker failed after job start task_type=%s file_id=%d mode=%s err=%v", t.Type(), state.FileID, modeUsed, remoteErr)
-					return task.StatusError, wrapVideoTaskErr(remoteErr)
+			req := remoteWorkerSubtitleBurnRequest{
+				SourceURL:     sourceURL,
+				EmbeddedIndex: remoteSubtitleEmbeddedIndex(state.Subtitle),
+				Mode:          modeUsed,
+				Duration:      state.Duration,
+				Bitrate:       bitrate,
+				VideoHeight:   height,
+			}
+			if modeUsed == VideoSubtitleModeExternal {
+				req.SubtitleName = strings.TrimSpace(state.Subtitle.ExternalName)
+				subtitleURL, subtitleErr := buildRemoteFFMpegWorkerSubtitleURL(ctx, t, fileModel, remoteCfg, req.SubtitleName)
+				if subtitleErr != nil {
+					logger.Warning("Video subtitle remote worker subtitle url unavailable task_type=%s file_id=%d err=%v", t.Type(), state.FileID, subtitleErr)
+				} else {
+					req.SubtitleURL = subtitleURL
 				}
-				logger.Warning("Video subtitle remote worker failed before job start, fallback to local ffmpeg task_type=%s file_id=%d mode=%s err=%v", t.Type(), state.FileID, modeUsed, remoteErr)
+			}
+			if modeUsed != VideoSubtitleModeExternal || req.SubtitleURL != "" {
+				remoteErr := runRemoteSubtitleBurn(ctx, t, remoteCfg, req, outputPath)
+				if remoteErr == nil {
+					remoteDone = true
+				} else if ctx.Err() != nil {
+					return task.StatusError, wrapVideoTaskErr(remoteErr)
+				} else {
+					var startedErr *remoteWorkerStartedError
+					if errors.As(remoteErr, &startedErr) {
+						logger.Error("Video subtitle remote worker failed after job start task_type=%s file_id=%d mode=%s err=%v", t.Type(), state.FileID, modeUsed, remoteErr)
+						return task.StatusError, wrapVideoTaskErr(remoteErr)
+					}
+					logger.Warning("Video subtitle remote worker failed before job start, fallback to local ffmpeg task_type=%s file_id=%d mode=%s err=%v", t.Type(), state.FileID, modeUsed, remoteErr)
+				}
 			}
 		}
 	}
@@ -1462,6 +1480,15 @@ func subtitleForceStyle(videoHeight int) string {
 	return subtitleStyle720p
 }
 
+func IsSupportedExternalSubtitleName(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	return ext == ".srt" || ext == ".ass" || ext == ".ssa"
+}
+
+func ResolveExternalSubtitlePath(input, subtitleName string) (string, error) {
+	return resolveExternalSubtitlePath(input, subtitleName)
+}
+
 func resolveExternalSubtitlePath(input, subtitleName string) (string, error) {
 	name := strings.TrimSpace(subtitleName)
 	if name == "" {
@@ -1511,8 +1538,7 @@ func listExternalSubtitlePaths(input string) ([]string, error) {
 			continue
 		}
 
-		ext := strings.ToLower(filepath.Ext(entry.Name()))
-		if ext != ".srt" && ext != ".ass" && ext != ".ssa" {
+		if !IsSupportedExternalSubtitleName(entry.Name()) {
 			continue
 		}
 

@@ -7,14 +7,20 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/ent"
+	"github.com/cloudreve/Cloudreve/v4/ent/task"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
+	"github.com/cloudreve/Cloudreve/v4/pkg/ffmpegworker"
+	"github.com/cloudreve/Cloudreve/v4/pkg/queue"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
+	"github.com/gofrs/uuid"
 )
 
 type videoInfoResponse struct {
@@ -120,6 +126,87 @@ func TestVideoInfo_SuccessAndSubtitles(t *testing.T) {
 	}
 	if resp.Data.Subtitles.Embedded[0].Index != 0 || resp.Data.Subtitles.Embedded[0].Language != "eng" || resp.Data.Subtitles.Embedded[0].Title != "English" {
 		t.Fatalf("unexpected first embedded subtitle: %+v", resp.Data.Subtitles.Embedded[0])
+	}
+}
+
+func TestServeWorkerSubtitleWithSignedURL(t *testing.T) {
+	l := &memLogger{}
+	dep, client, user := newTestDep(t, l)
+	defer client.Close()
+	r := newTestRouter(dep, user)
+
+	dir := t.TempDir()
+	videoPath := filepath.Join(dir, "movie.mp4")
+	subtitleName := "movie.zh.srt"
+	subtitleBody := "1\n00:00:00,000 --> 00:00:01,000\nhello\n"
+	if err := os.WriteFile(videoPath, []byte("video"), 0600); err != nil {
+		t.Fatalf("write video: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, subtitleName), []byte(subtitleBody), 0600); err != nil {
+		t.Fatalf("write subtitle: %v", err)
+	}
+	fileID := mustCreateVideoFileFixture(t, client, user.ID, videoPath)
+	fileModel, err := client.File.Get(context.Background(), fileID)
+	if err != nil {
+		t.Fatalf("get file: %v", err)
+	}
+	stateBytes, err := json.Marshal(queue.VideoTaskState{
+		FileID: fileID,
+		Subtitle: &queue.VideoSubtitleOption{
+			Mode:         queue.VideoSubtitleModeExternal,
+			ExternalName: subtitleName,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	taskModel, err := client.Task.Create().
+		SetType(queue.VideoSubtitleBurnTaskType).
+		SetStatus(task.StatusProcessing).
+		SetUserID(user.ID).
+		SetCorrelationID(uuid.Must(uuid.NewV4())).
+		SetPublicState(&types.TaskPublicState{}).
+		SetPrivateState(string(stateBytes)).
+		Save(context.Background())
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	base, err := url.Parse("http://example.test")
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	rawURL, err := ffmpegworker.BuildSubtitleURL(base, fmt.Sprintf("/api/v4/video/worker/subtitle/%d", taskModel.ID), ffmpegworker.SubtitleURLClaims{
+		TaskID:       taskModel.ID,
+		FileID:       fileID,
+		EntityID:     fileModel.PrimaryEntity,
+		SubtitleName: subtitleName,
+		Expires:      timeNow().Add(time.Minute).Unix(),
+		Nonce:        "nonce",
+	}, "worker-secret")
+	if err != nil {
+		t.Fatalf("BuildSubtitleURL: %v", err)
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("url.Parse built: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, parsed.RequestURI(), nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != subtitleBody {
+		t.Fatalf("body = %q", w.Body.String())
+	}
+
+	head := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodHead, parsed.RequestURI(), nil)
+	r.ServeHTTP(head, req)
+	if head.Code != http.StatusOK || head.Body.Len() != 0 {
+		t.Fatalf("HEAD status = %d, body=%q", head.Code, head.Body.String())
 	}
 }
 

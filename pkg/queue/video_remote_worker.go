@@ -63,6 +63,17 @@ type remoteWorkerJobStatus struct {
 	TotalBytes        int64   `json:"total_bytes"`
 }
 
+type remoteWorkerSubtitleBurnRequest struct {
+	SourceURL     string
+	SubtitleURL   string
+	SubtitleName  string
+	EmbeddedIndex int
+	Mode          string
+	Duration      float64
+	Bitrate       int
+	VideoHeight   int
+}
+
 func loadRemoteFFMpegWorkerConfig(ctx context.Context) *settingpkg.RemoteFFMpegWorker {
 	dep, ok := depFromContext(ctx).(interface{ SettingProvider() settingpkg.Provider })
 	if !ok {
@@ -80,13 +91,17 @@ func shouldUseRemoteSubtitleBurn(input string, option *VideoSubtitleOption, mode
 	if cfg == nil || !cfg.Enabled || cfg.Endpoint == "" || cfg.APIKey == "" {
 		return false
 	}
-	if modeUsed != VideoSubtitleModeEmbedded {
+	if option == nil {
 		return false
 	}
-	if option == nil || option.EmbeddedIndex == nil || *option.EmbeddedIndex < 0 {
+	switch modeUsed {
+	case VideoSubtitleModeEmbedded:
+		return option.EmbeddedIndex != nil && *option.EmbeddedIndex >= 0 && strings.EqualFold(strings.TrimSpace(option.Mode), VideoSubtitleModeEmbedded)
+	case VideoSubtitleModeExternal:
+		return strings.TrimSpace(option.ExternalName) != "" && strings.EqualFold(strings.TrimSpace(option.Mode), VideoSubtitleModeExternal)
+	default:
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(option.Mode), VideoSubtitleModeEmbedded)
 }
 
 func remoteSubtitleEmbeddedIndex(option *VideoSubtitleOption) int {
@@ -130,7 +145,45 @@ func buildRemoteFFMpegWorkerSourceURL(ctx context.Context, taskRef *VideoSubtitl
 	return ffmpegworker.BuildSourceURL(siteURL, sourcePath, claims, dep.SettingProvider().SecretKey(ctx))
 }
 
-func runRemoteSubtitleBurn(ctx context.Context, taskRef *VideoSubtitleBurnTask, cfg *settingpkg.RemoteFFMpegWorker, sourceURL string, embeddedIndex int, duration float64, bitrate int, outputPath string) error {
+func buildRemoteFFMpegWorkerSubtitleURL(ctx context.Context, taskRef *VideoSubtitleBurnTask, fileModel *ent.File, cfg *settingpkg.RemoteFFMpegWorker, subtitleName string) (string, error) {
+	if taskRef == nil || fileModel == nil {
+		return "", fmt.Errorf("invalid remote worker subtitle url argument (%w)", CriticalErr)
+	}
+	if !IsSupportedExternalSubtitleName(subtitleName) || filepath.Base(subtitleName) != subtitleName || strings.Contains(subtitleName, "/") || strings.Contains(subtitleName, "\\") {
+		return "", fmt.Errorf("invalid subtitle external_name %q (%w)", subtitleName, CriticalErr)
+	}
+
+	dep, ok := depFromContext(ctx).(interface{ SettingProvider() settingpkg.Provider })
+	if !ok {
+		return "", fmt.Errorf("missing setting provider for remote worker (%w)", CriticalErr)
+	}
+
+	siteURL := dep.SettingProvider().SiteURL(settingpkg.UseFirstSiteUrl(ctx))
+	if siteURL == nil || siteURL.Scheme == "" || siteURL.Host == "" {
+		return "", fmt.Errorf("site url is required for remote worker subtitle url (%w)", CriticalErr)
+	}
+	if fileModel.PrimaryEntity <= 0 {
+		return "", fmt.Errorf("file has no primary entity (%w)", CriticalErr)
+	}
+
+	nonce := uuid.Must(uuid.NewV4()).String()
+	ttl := cfg.SourceURLTTL
+	if ttl <= 0 {
+		ttl = 30 * time.Minute
+	}
+	claims := ffmpegworker.SubtitleURLClaims{
+		TaskID:       taskRef.ID(),
+		FileID:       fileModel.ID,
+		EntityID:     fileModel.PrimaryEntity,
+		SubtitleName: subtitleName,
+		Expires:      time.Now().Add(ttl).Unix(),
+		Nonce:        nonce,
+	}
+	sourcePath := fmt.Sprintf("%s/video/worker/subtitle/%d", constants.APIPrefix, taskRef.ID())
+	return ffmpegworker.BuildSubtitleURL(siteURL, sourcePath, claims, dep.SettingProvider().SecretKey(ctx))
+}
+
+func runRemoteSubtitleBurn(ctx context.Context, taskRef *VideoSubtitleBurnTask, cfg *settingpkg.RemoteFFMpegWorker, req remoteWorkerSubtitleBurnRequest, outputPath string) error {
 	workerCtx := ctx
 	cancel := func() {}
 	if cfg.Timeout > 0 {
@@ -138,7 +191,7 @@ func runRemoteSubtitleBurn(ctx context.Context, taskRef *VideoSubtitleBurnTask, 
 	}
 	defer cancel()
 
-	jobID, err := createRemoteWorkerJob(workerCtx, cfg, sourceURL, embeddedIndex, duration, bitrate)
+	jobID, err := createRemoteWorkerJob(workerCtx, cfg, req)
 	if err != nil {
 		return err
 	}
@@ -170,19 +223,30 @@ func runRemoteSubtitleBurn(ctx context.Context, taskRef *VideoSubtitleBurnTask, 
 	return nil
 }
 
-func createRemoteWorkerJob(ctx context.Context, cfg *settingpkg.RemoteFFMpegWorker, sourceURL string, embeddedIndex int, duration float64, bitrate int) (string, error) {
+func createRemoteWorkerJob(ctx context.Context, cfg *settingpkg.RemoteFFMpegWorker, reqBody remoteWorkerSubtitleBurnRequest) (string, error) {
 	payload := map[string]any{
-		"source_url":     sourceURL,
-		"embedded_index": embeddedIndex,
-		"duration":       duration,
-		"bitrate":        bitrate,
+		"source_url": reqBody.SourceURL,
+		"duration":   reqBody.Duration,
+		"bitrate":    reqBody.Bitrate,
+	}
+	endpointPath := "/v1/jobs/embedded-subtitle-burn-url"
+	switch reqBody.Mode {
+	case VideoSubtitleModeEmbedded:
+		payload["embedded_index"] = reqBody.EmbeddedIndex
+	case VideoSubtitleModeExternal:
+		payload["subtitle_url"] = reqBody.SubtitleURL
+		payload["subtitle_name"] = reqBody.SubtitleName
+		payload["video_height"] = reqBody.VideoHeight
+		endpointPath = "/v1/jobs/external-subtitle-burn-url"
+	default:
+		return "", fmt.Errorf("unsupported remote worker subtitle mode %q", reqBody.Mode)
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
 
-	endpoint := strings.TrimRight(cfg.Endpoint, "/") + "/v1/jobs/embedded-subtitle-burn-url"
+	endpoint := strings.TrimRight(cfg.Endpoint, "/") + endpointPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
 	if err != nil {
 		return "", err
@@ -566,8 +630,8 @@ func redactRemoteWorkerText(cfg *settingpkg.RemoteFFMpegWorker, text string) str
 	text = strings.ReplaceAll(text, `\u003F`, "?")
 	text = strings.ReplaceAll(text, `\u003f`, "?")
 	text = regexp.MustCompile(`(?i)(Authorization:\s*Bearer\s+)[^\s]+`).ReplaceAllString(text, "${1}REDACTED")
-	text = regexp.MustCompile(`(?i)(https?://[^\s"']+/api/v4/video/worker/source/[^?\s"']+\?)[^\s"']+`).ReplaceAllString(text, "${1}REDACTED")
-	text = regexp.MustCompile(`(?i)(/api/v4/video/worker/source/[^?\s"']+\?)[^\s"']+`).ReplaceAllString(text, "${1}REDACTED")
+	text = regexp.MustCompile(`(?i)(https?://[^\s"']+/api/v4/video/worker/(source|subtitle)/[^?\s"']+\?)[^\s"']+`).ReplaceAllString(text, "${1}REDACTED")
+	text = regexp.MustCompile(`(?i)(/api/v4/video/worker/(source|subtitle)/[^?\s"']+\?)[^\s"']+`).ReplaceAllString(text, "${1}REDACTED")
 	text = regexp.MustCompile(`(?i)(signature=)[^&\s]+`).ReplaceAllString(text, "${1}REDACTED")
 	return strings.TrimSpace(text)
 }
