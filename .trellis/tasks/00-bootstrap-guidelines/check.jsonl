@@ -1,0 +1,12 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guide index for validating bootstrap documentation"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check documented conventions stay simple and match existing reuse patterns"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check cross-layer guidance is captured where frontend behavior touches backend APIs"}
+{"file": ".trellis/spec/assets/frontend/index.md", "reason": "Validate the frontend spec index created by this bootstrap task"}
+{"file": ".trellis/spec/assets/frontend/directory-structure.md", "reason": "Validate documented frontend directory conventions against real code"}
+{"file": ".trellis/spec/assets/frontend/component-guidelines.md", "reason": "Validate documented frontend component conventions against real code"}
+{"file": ".trellis/spec/assets/frontend/hook-guidelines.md", "reason": "Validate documented frontend hook conventions against real code"}
+{"file": ".trellis/spec/assets/frontend/state-management.md", "reason": "Validate documented frontend state conventions against real code"}
+{"file": ".trellis/spec/assets/frontend/quality-guidelines.md", "reason": "Validate documented frontend quality conventions against real code"}
+{"file": ".trellis/spec/assets/frontend/type-safety.md", "reason": "Validate documented frontend type-safety conventions against real code"}
+{"file": ".trellis/spec/ops/index.md", "reason": "Validate ops spec index for deployment and FRP access conventions"}
+{"file": ".trellis/spec/ops/deployment.md", "reason": "Validate deployment access contract and secret-handling rules"}

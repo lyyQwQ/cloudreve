@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/queue-task-lifecycle.md", "reason": "Remote download queue lifecycle and suspending/resume semantics"}
+{"file": ".trellis/tasks/04-24-bug-download-subtitle-after-restart/prd.md", "reason": "Prior remote download restart/cancel bug context"}
+{"file": ".trellis/tasks/04-29-04-29-workflow-timeout-remote-download-churn/research/2026-04-29-production-remote-download-churn.md", "reason": "Production evidence and candidate fix for seeding churn"}
+{"file": ".trellis/tasks/04-29-04-29-workflow-timeout-remote-download-churn/research/2026-04-29-remote-download-seeding-lifecycle-cleanup-boundary.md", "reason": "Architecture boundary and implementation design for seeding cleanup"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Remote-download cleanup crosses workflow service, file deletion service, queue state, and downloader backend"}

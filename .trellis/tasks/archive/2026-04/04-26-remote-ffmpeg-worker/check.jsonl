@@ -1,0 +1,5 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/media-processing.md", "reason": "Check media processing changes against FFmpeg command contracts"}
+{"file": ".trellis/spec/backend/queue-task-lifecycle.md", "reason": "Check queue lifecycle behavior for remote execution"}
+{"file": ".trellis/tasks/04-26-remote-ffmpeg-worker/info.md", "reason": "Check implementation against remote worker technical design"}
+{"file": ".trellis/spec/ops/deployment.md", "reason": "Verify frontend-visible backend changes follow Docker static embedding contract"}

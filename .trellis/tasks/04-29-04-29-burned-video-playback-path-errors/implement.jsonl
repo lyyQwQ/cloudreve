@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/assets/frontend/component-guidelines.md", "reason": "Frontend playback and task/file UI behavior"}
+{"file": ".trellis/spec/backend/media-processing.md", "reason": "Burned MP4 content serving and media output contracts"}
+{"file": ".trellis/spec/ops/deployment.md", "reason": "Verify embedded frontend static release and production troubleshooting"}

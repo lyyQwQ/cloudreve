@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/media-processing.md", "reason": "Verify font rendering fix preserves media processing and worker contracts"}
+{"file": ".trellis/spec/ops/deployment.md", "reason": "Verify production font/config changes avoid secret leakage and deployment drift"}

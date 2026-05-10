@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis guide for minimal maintainable implementation"}
+{"file": ".trellis/spec/backend/queue-task-lifecycle.md", "reason": "Backend queue restore/runtime-state contracts for resumable tasks"}
+{"file": ".trellis/tasks/04-24-bug-download-subtitle-after-restart/info.md", "reason": "Task-specific code evidence and expected implementation direction"}
+{"file": ".trellis/tasks/04-24-bug-download-subtitle-after-restart/research/2026-04-25-post-deploy-qb-status.md", "reason": "Post-deploy evidence that qB completed while Cloudreve stayed stale, plus scheduler/cancel leads"}

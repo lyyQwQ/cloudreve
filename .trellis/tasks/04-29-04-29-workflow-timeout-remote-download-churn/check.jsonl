@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/queue-task-lifecycle.md", "reason": "Verify queue fix preserves cancellation, resume, and persistence semantics"}
+{"file": ".trellis/spec/ops/deployment.md", "reason": "Verify production troubleshooting notes avoid secrets"}
+{"file": ".trellis/tasks/04-29-04-29-workflow-timeout-remote-download-churn/research/2026-04-29-production-remote-download-churn.md", "reason": "Verify implementation addresses observed production churn"}
+{"file": ".trellis/tasks/04-29-04-29-workflow-timeout-remote-download-churn/research/2026-04-29-remote-download-seeding-lifecycle-cleanup-boundary.md", "reason": "Verify seeding cleanup matches researched architecture boundary"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check cross-layer lifecycle behavior and ownership boundaries"}

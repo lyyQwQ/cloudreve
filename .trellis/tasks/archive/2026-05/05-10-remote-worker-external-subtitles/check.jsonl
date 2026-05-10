@@ -1,0 +1,5 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/index.md", "reason": "backend spec index for verification"}
+{"file": ".trellis/spec/backend/media-processing.md", "reason": "verify remote worker and subtitle filter contracts"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "verify cross-layer data flow"}
+{"file": ".trellis/tasks/05-10-remote-worker-external-subtitles/research/local-code-findings.md", "reason": "verify against researched code constraints"}

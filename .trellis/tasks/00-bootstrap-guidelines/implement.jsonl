@@ -1,0 +1,12 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guide index for bootstrap documentation work"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Avoid over-abstraction and document reuse conventions from real code"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Consider frontend/backend boundaries when documenting conventions"}
+{"file": ".trellis/spec/assets/frontend/index.md", "reason": "Frontend spec index created by this bootstrap task"}
+{"file": ".trellis/spec/assets/frontend/directory-structure.md", "reason": "Frontend directory conventions documented by this bootstrap task"}
+{"file": ".trellis/spec/assets/frontend/component-guidelines.md", "reason": "Frontend component conventions documented by this bootstrap task"}
+{"file": ".trellis/spec/assets/frontend/hook-guidelines.md", "reason": "Frontend hook conventions documented by this bootstrap task"}
+{"file": ".trellis/spec/assets/frontend/state-management.md", "reason": "Frontend state conventions documented by this bootstrap task"}
+{"file": ".trellis/spec/assets/frontend/quality-guidelines.md", "reason": "Frontend quality conventions documented by this bootstrap task"}
+{"file": ".trellis/spec/assets/frontend/type-safety.md", "reason": "Frontend type-safety conventions documented by this bootstrap task"}
+{"file": ".trellis/spec/ops/index.md", "reason": "Ops spec index for deployment and FRP access conventions"}
+{"file": ".trellis/spec/ops/deployment.md", "reason": "Deployment access contract: FRP jump endpoint is not actual VPS IP"}

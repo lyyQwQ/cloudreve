@@ -1,0 +1,32 @@
+{
+  "id": "bug-download-subtitle-after-restart",
+  "name": "bug-download-subtitle-after-restart",
+  "title": "离线下载恢复后进度与取消修复",
+  "description": "Fix remote download tasks after container restart: progress stuck, cancel 500/panic, and downloader handle resume safety",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "Estrella",
+  "assignee": "Estrella",
+  "createdAt": "2026-04-24",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "rewrite/backend-by-module-fixed",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "pkg/filemanager/workflows/remote_download.go",
+    "service/explorer/workflows.go",
+    "pkg/queue/queue.go",
+    "pkg/queue/task.go",
+    "pkg/queue/registry.go"
+  ],
+  "notes": "",
+  "meta": {}
+}

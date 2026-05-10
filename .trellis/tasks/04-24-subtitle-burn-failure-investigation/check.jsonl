@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis guide for quality review"}
+{"file": ".trellis/spec/backend/media-processing.md", "reason": "Backend FFmpeg subtitle filter construction contracts for review"}
+{"file": ".trellis/tasks/04-24-subtitle-burn-failure-investigation/research/2026-04-25-logs-db-env.md", "reason": "Evidence and acceptance context for subtitle burn fix review"}
+{"file": ".trellis/tasks/04-24-subtitle-burn-failure-investigation/info.md", "reason": "Concrete acceptance and test checklist for subtitle filter builder review"}
+{"file": ".trellis/tasks/04-24-subtitle-burn-failure-investigation/research/2026-04-25-faststart-playback-502.md", "reason": "Evidence for checking subtitle-burn faststart fix"}

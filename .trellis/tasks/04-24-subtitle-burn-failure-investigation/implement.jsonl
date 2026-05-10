@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis guide for focused investigation and minimal implementation"}
+{"file": ".trellis/spec/backend/media-processing.md", "reason": "Backend FFmpeg subtitle filter construction contracts"}
+{"file": ".trellis/tasks/04-24-subtitle-burn-failure-investigation/research/2026-04-25-logs-db-env.md", "reason": "Read-only online evidence for subtitle burn ffmpeg filter parsing failure"}
+{"file": ".trellis/tasks/04-24-subtitle-burn-failure-investigation/info.md", "reason": "Concrete implementation plan and test checklist for subtitle filter builder fix"}
+{"file": ".trellis/tasks/04-24-subtitle-burn-failure-investigation/research/2026-04-25-faststart-playback-502.md", "reason": "Read-only production evidence for burned MP4 playback issue and faststart requirement"}

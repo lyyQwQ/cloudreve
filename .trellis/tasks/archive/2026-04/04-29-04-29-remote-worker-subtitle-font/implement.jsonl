@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/media-processing.md", "reason": "Remote worker subtitle burn fontconfig and FFmpeg subtitle rendering contracts"}
+{"file": ".trellis/tasks/archive/2026-04/04-26-remote-ffmpeg-worker/info.md", "reason": "Prior remote worker design and production validation context"}

@@ -1,0 +1,30 @@
+{
+  "id": "subtitle-burn-failure-investigation",
+  "name": "subtitle-burn-failure-investigation",
+  "title": "字幕路径特殊字符导致烧录失败修复",
+  "description": "Fix subtitle burn ffmpeg filter parsing failures for paths with Chinese characters and brackets by using safe subtitles filename options",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "Estrella",
+  "assignee": "Estrella",
+  "createdAt": "2026-04-24",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "rewrite/backend-by-module-fixed",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "service/video/video.go",
+    "pkg/queue/video_queue.go",
+    "pkg/queue/video_queue_test.go"
+  ],
+  "notes": "Split from P0 remote download recovery task. Read-only investigation found ffmpeg filtergraph parsing failures for subtitles=<path>:si=0 when paths contain Chinese characters/brackets; ffmpeg 8.0.1 supports filename= named option.",
+  "meta": {}
+}

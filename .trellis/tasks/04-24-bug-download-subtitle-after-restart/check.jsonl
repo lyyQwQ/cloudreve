@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared Trellis guide for quality review"}
+{"file": ".trellis/spec/backend/queue-task-lifecycle.md", "reason": "Backend queue restore/runtime-state contracts for quality review"}
+{"file": ".trellis/tasks/04-24-bug-download-subtitle-after-restart/info.md", "reason": "Task-specific acceptance criteria and evidence for review"}
+{"file": ".trellis/tasks/04-24-bug-download-subtitle-after-restart/research/2026-04-25-post-deploy-qb-status.md", "reason": "Post-deploy evidence required for quality review"}
