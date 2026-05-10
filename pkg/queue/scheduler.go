@@ -3,10 +3,11 @@ package queue
 import (
 	"container/heap"
 	"errors"
-	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 )
 
 var (
@@ -32,12 +33,17 @@ type (
 		taskQueue taskHeap
 		capacity  int
 		count     int
+		sequence  uint64
 		exit      chan struct{}
 		logger    logging.Logger
 		stopOnce  sync.Once
 		stopFlag  int32
 	}
-	taskHeap []Task
+	scheduledTask struct {
+		task     Task
+		sequence uint64
+	}
+	taskHeap []scheduledTask
 )
 
 // Queue send Task to the buffer channel
@@ -53,7 +59,8 @@ func (s *fifoScheduler) Queue(task Task) error {
 		return ErrMaxCapacity
 	}
 
-	heap.Push(&s.taskQueue, task)
+	s.sequence++
+	heap.Push(&s.taskQueue, scheduledTask{task: task, sequence: s.sequence})
 	s.count++
 
 	return nil
@@ -71,14 +78,14 @@ func (s *fifoScheduler) Request() (Task, error) {
 	if s.count == 0 {
 		return nil, ErrNoTaskInQueue
 	}
-	if s.taskQueue.Len() == 0 || s.taskQueue[0].ResumeTime() > time.Now().Unix() {
+	if s.taskQueue.Len() == 0 || s.taskQueue[0].task.ResumeTime() > time.Now().Unix() {
 		return nil, ErrNoTaskInQueue
 	}
 
 	data := heap.Pop(&s.taskQueue)
 	s.count--
 
-	return data.(Task), nil
+	return data.(scheduledTask).task, nil
 }
 
 // Shutdown the worker
@@ -93,7 +100,7 @@ func (s *fifoScheduler) Shutdown() error {
 // NewFifoScheduler for create new Scheduler instance
 func NewFifoScheduler(queueSize int, logger logging.Logger) Scheduler {
 	w := &fifoScheduler{
-		taskQueue: make([]Task, 0),
+		taskQueue: make([]scheduledTask, 0),
 		capacity:  queueSize,
 		logger:    logger,
 	}
@@ -107,7 +114,10 @@ func (h taskHeap) Len() int {
 }
 
 func (h taskHeap) Less(i, j int) bool {
-	return h[i].ResumeTime() < h[j].ResumeTime()
+	if h[i].task.ResumeTime() == h[j].task.ResumeTime() {
+		return h[i].sequence < h[j].sequence
+	}
+	return h[i].task.ResumeTime() < h[j].task.ResumeTime()
 }
 
 func (h taskHeap) Swap(i, j int) {
@@ -115,7 +125,7 @@ func (h taskHeap) Swap(i, j int) {
 }
 
 func (h *taskHeap) Push(x any) {
-	*h = append(*h, x.(Task))
+	*h = append(*h, x.(scheduledTask))
 }
 
 func (h *taskHeap) Pop() any {

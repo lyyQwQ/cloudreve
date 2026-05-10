@@ -61,6 +61,30 @@ func TestFifoSchedulerRequestsEarliestDueTask(t *testing.T) {
 	}
 }
 
+func TestFifoSchedulerRequestsSameResumeTimeInQueueOrder(t *testing.T) {
+	s := NewFifoScheduler(0, nil)
+	now := time.Now().Unix()
+	first := schedulerTestTask(1, now-1)
+	second := schedulerTestTask(2, now-1)
+	third := schedulerTestTask(3, now-1)
+
+	for _, task := range []Task{first, second, third} {
+		if err := s.Queue(task); err != nil {
+			t.Fatalf("queue task %d: %v", task.ID(), err)
+		}
+	}
+
+	for _, want := range []Task{first, second, third} {
+		got, err := s.Request()
+		if err != nil {
+			t.Fatalf("request task: %v", err)
+		}
+		if got.ID() != want.ID() {
+			t.Fatalf("requested task ID = %d, want %d", got.ID(), want.ID())
+		}
+	}
+}
+
 func schedulerTestTask(id int, resumeTime int64) Task {
 	return &schedulerTask{DBTask: &DBTask{
 		Task: &ent.Task{

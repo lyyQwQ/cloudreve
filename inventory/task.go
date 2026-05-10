@@ -166,6 +166,7 @@ func (c *taskClient) GetPendingTasks(ctx context.Context, taskType ...string) ([
 	tasks, err := withTaskEagerLoading(ctx, c.client.Task.Query()).
 		Where(task.StatusIn(task.StatusProcessing, task.StatusQueued, task.StatusSuspending)).
 		Where(task.TypeIn(taskType...)).
+		Order(task.ByCreatedAt(sql.OrderAsc()), task.ByID(sql.OrderAsc())).
 		All(ctx)
 	if err != nil {
 		return nil, err
