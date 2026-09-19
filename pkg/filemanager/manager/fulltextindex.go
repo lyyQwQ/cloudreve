@@ -60,6 +60,10 @@ func (m *manager) SearchFullText(ctx context.Context, query string, offset int) 
 			return FullTextSearchResult{}, false
 		}
 
+		if file.InTrashBin() {
+			return FullTextSearchResult{}, false
+		}
+
 		return FullTextSearchResult{
 			File:    file,
 			Content: result.Text,
@@ -389,7 +393,7 @@ func (t *FullTextIndexTask) Do(ctx context.Context) (task.Status, error) {
 // performIndexing extracts text from the entity and indexes it. This is shared between
 // the regular index task and the copy task (as a fallback when copy fails).
 func performIndexing(ctx context.Context, fm *manager, uri *fs.URI, entityID, fileID, ownerID int, fileName string, deleteOldChunks bool) (task.Status, error) {
-	dep := fm.dep
+	dep := dependency.FromContext(ctx)
 	l := dep.Logger()
 
 	// Get entity source
@@ -438,6 +442,13 @@ func performIndexing(ctx context.Context, fm *manager, uri *fs.URI, entityID, fi
 	return task.StatusCompleted, nil
 }
 
+// ShouldExtractText checks if a file is eligible for text extraction based on
+// the extractor's supported extensions and max file size. This is exported for
+// use by the rebuild index workflow.
+func ShouldExtractText(extractor searcher.TextExtractor, fileName string, size int64) bool {
+	return util.IsInExtensionList(extractor.Exts(), fileName) && extractor.MaxFileSize() > size
+}
+
 // shouldIndexFullText checks if a file should be indexed for full-text search.
 func (m *manager) shouldIndexFullText(ctx context.Context, fileName string, size int64) bool {
 	if !m.settings.FTSEnabled(ctx) {
@@ -445,7 +456,7 @@ func (m *manager) shouldIndexFullText(ctx context.Context, fileName string, size
 	}
 
 	extractor := m.dep.TextExtractor(ctx)
-	return util.IsInExtensionList(extractor.Exts(), fileName) && extractor.MaxFileSize() > size
+	return ShouldExtractText(extractor, fileName, size)
 }
 
 // fullTextIndexForNewEntity creates and queues a full text index task for a newly uploaded entity.

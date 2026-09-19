@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent/metadata"
 	"github.com/cloudreve/Cloudreve/v4/inventory/types"
 	"github.com/cloudreve/Cloudreve/v4/pkg/boolset"
+	"github.com/cloudreve/Cloudreve/v4/pkg/conf"
 )
 
 func TestUpsertHLSArtifact_Create(t *testing.T) {
@@ -324,4 +326,80 @@ func newAllowedHLSArtifactDir(t *testing.T, pattern string) string {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	return dir
+}
+
+// 批量及递归删除共用 FileClient.Delete：事务提交前目录必须始终可恢复。
+func TestHLSFileDeleteTransaction(t *testing.T) {
+	for _, rollback := range []bool{false, true} {
+		t.Run(fmt.Sprint("rollback=", rollback), func(t *testing.T) {
+			ctx := context.Background()
+			client := enttest.Open(t, "sqlite3", "file:delete_hls?mode=memory&_fk=1")
+			defer client.Close()
+			var ids []int
+			var dirs []string
+			for _, suffix := range []string{"one", "two"} {
+				f := createHLSLifecycleFixtureWithSuffix(t, ctx, client, suffix)
+				dir := newAllowedHLSArtifactDir(t, "delete-tx-*")
+				if err := os.WriteFile(filepath.Join(dir, "index.m3u8"), []byte("#EXTM3U"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := UpsertHLSArtifact(ctx, client, f.ID, f.OwnerID, dir, 1, 20, "h264"); err != nil {
+					t.Fatal(err)
+				}
+				ids = append(ids, f.ID)
+				dirs = append(dirs, dir)
+			}
+			fc, tx, txCtx, err := WithTx(ctx, NewFileClient(client, conf.SQLite3DB, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer Rollback(tx)
+			files, err := fc.GetClient().File.Query().WithEntities().All(txCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			nested, child, childCtx, err := WithTx(txCtx, fc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := nested.Delete(childCtx, files, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := Commit(child); err != nil {
+				t.Fatal(err)
+			}
+			for _, dir := range dirs {
+				if _, err := os.Stat(dir); err != nil {
+					t.Fatalf("removed before outer commit: %v", err)
+				}
+			}
+			if rollback {
+				err = Rollback(tx)
+			} else {
+				err = Commit(tx)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, dir := range dirs {
+				_, err := os.Stat(dir)
+				if rollback && err != nil {
+					t.Fatal("rollback lost HLS")
+				}
+				if !rollback && !os.IsNotExist(err) {
+					t.Fatal("committed HLS directory remains")
+				}
+			}
+			count, err := client.HLSArtifact.Query().Count(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rollback && count != len(ids) {
+				t.Fatal("rollback lost artifacts")
+			}
+			if !rollback && count != 0 {
+				t.Fatal("artifact rows remain")
+			}
+		})
+	}
 }

@@ -68,6 +68,21 @@ func CreateRemoteDownload(c *gin.Context) {
 	}
 }
 
+// RebuildFTSIndex rebuilds full text search index for files
+func RebuildFTSIndex(c *gin.Context) {
+	service := ParametersFromContext[*explorer.RebuildFTSIndexWorkflowService](c, explorer.CreateRebuildFTSIndexParamCtx{})
+	resp, err := service.CreateRebuildFTSIndexTask(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	c.JSON(200, serializer.Response{
+		Data: resp,
+	})
+}
+
 // ExtractArchive creates extract archive task
 func ExtractArchive(c *gin.Context) {
 	service := ParametersFromContext[*explorer.ArchiveWorkflowService](c, explorer.CreateArchiveParamCtx{})
@@ -301,6 +316,18 @@ func Delete(c *gin.Context) {
 func Restore(c *gin.Context) {
 	service := ParametersFromContext[*explorer.DeleteFileService](c, explorer.DeleteFileParameterCtx{})
 	err := service.Restore(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	c.JSON(200, serializer.Response{})
+}
+
+// EmptyTrash hard-deletes every top-level item in the current user's trash bin.
+func EmptyTrash(c *gin.Context) {
+	err := explorer.EmptyTrash(c)
 	if err != nil {
 		c.JSON(200, serializer.Err(c, err))
 		c.Abort()

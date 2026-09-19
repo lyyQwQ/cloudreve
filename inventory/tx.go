@@ -20,11 +20,48 @@ type (
 		inherited   bool
 		finished    bool
 		storageDiff StorageDiff
+		hlsCleanup  []string
 	}
 
 	// TxCtx is the context key for inherited transaction
 	TxCtx struct{}
 )
+
+// ReserveStorage atomically adds `size` bytes to user `uid`'s storage inside
+// this transaction, enforcing storage + size <= maxTotal at the database
+// level (when maxTotal > 0). This is the correct API for grabbing the
+// per-user storage quota:
+//
+//   - It MUST be called as the first write of the transaction (or at least
+//     before any other WRITE to files/entities/etc.). That way the users-row
+//     X lock is acquired before any INSERT into files/entities, so
+//     concurrent uploads for the same owner serialize on the users row from
+//     the start and cannot deadlock via foreign-key S locks on the shared
+//     parent folder / storage-policy rows.
+//   - A matching compensating negative diff is appended to storageDiff so
+//     the pre-reservation is netted against the positive diff emitted later
+//     by CreateEntity / fc.Copy / etc. No amount is double-applied.
+//   - On failure (quota exceeded or any other DB error) the caller MUST
+//     Rollback the transaction: any placeholder writes done afterwards
+//     would otherwise be committed without a matching storage reservation.
+//
+// It is safe to call this from an inherited-tx wrapper (returned by
+// InheritTx) — AppendStorageDiff routes to the root tx.
+func (t *Tx) ReserveStorage(ctx context.Context, uc UserClient, uid int, size, maxTotal int64) error {
+	if size <= 0 {
+		return nil
+	}
+
+	txUc, _ := InheritTx(ctx, uc)
+	if err := txUc.ReserveStorage(ctx, uid, size, maxTotal); err != nil {
+		return err
+	}
+
+	// Net out the pre-reservation against any positive diff that
+	// CreateEntity / fc.Copy / ... will append later in the same tx.
+	t.AppendStorageDiff(StorageDiff{uid: -size})
+	return nil
+}
 
 // AppendStorageDiff appends the given storage diff to the transaction.
 func (t *Tx) AppendStorageDiff(diff StorageDiff) {
@@ -89,7 +126,16 @@ func Rollback(tx *Tx) error {
 func commit(tx *Tx) (bool, error) {
 	if !tx.inherited {
 		tx.finished = true
-		return true, tx.tx.Commit()
+		if err := tx.tx.Commit(); err != nil {
+			return true, err
+		}
+		// 数据库提交后再删切片；失败目录记录日志，可由启用清理的孤儿扫描重试，回滚不触碰磁盘。
+		for _, path := range tx.hlsCleanup {
+			if err := RemoveHLSArtifactDir(path); err != nil {
+				logging.FromContext(context.Background()).Warning("HLS cleanup deferred: %s", err)
+			}
+		}
+		return true, nil
 	}
 	return false, nil
 }
@@ -99,14 +145,24 @@ func Commit(tx *Tx) error {
 	return err
 }
 
-// CommitWithStorageDiff commits the transaction and applies the storage diff, only if the transaction is not inherited.
+// CommitWithStorageDiff commits the transaction and applies the accumulated
+// storage diff. Only the outermost (non-inherited) transaction performs the
+// commit and the storage mutation.
+//
+// Quota enforcement is done UPFRONT via Tx.ReserveStorage, not here. This
+// function's role is to (a) commit the tx, and (b) apply any residual
+// storage diff produced by CreateEntity / CapEntities / etc. Tx.ReserveStorage
+// pre-emits a matching negative diff, so pre-reserved sizes are netted out
+// against the positive diff CreateEntity appends later. Residual is applied
+// AFTER commit via ApplyStorageDiff (auto-commit, safe to retry on
+// deadlock).
 func CommitWithStorageDiff(ctx context.Context, tx *Tx, l logging.Logger, uc UserClient) error {
-	commited, err := commit(tx)
+	committed, err := commit(tx)
 	if err != nil {
 		return err
 	}
 
-	if !commited {
+	if !committed {
 		return nil
 	}
 

@@ -30,7 +30,7 @@ type (
 		Metadata            map[string]string `json:"metadata" binding:"max=256"`
 		EntityType          string            `json:"entity_type" binding:"eq=|eq=live_photo|eq=version"`
 		EncryptionSupported []types.Cipher    `json:"encryption_supported"`
-		Previous            string            `form:"previous"`
+		Previous            string            `json:"previous" form:"previous"`
 	}
 )
 
@@ -197,8 +197,15 @@ func processChunkUpload(c *gin.Context, m manager.FileManager, session *fs.Uploa
 		}
 	}
 
-	// Finish upload
-	if isLastChunk {
+	// Finish upload only after every chunk has been received. When the client
+	// uploads chunks concurrently the last-indexed chunk can arrive before some
+	// earlier chunks; relying solely on isLastChunk would trigger CompleteUpload
+	// prematurely and truncate later-arriving chunks.
+	allReceived, err := m.MarkChunkUploaded(ctx, session, index)
+	if err != nil {
+		return err
+	}
+	if allReceived {
 		_, err := m.CompleteUpload(ctx, session)
 		if err != nil {
 			return fmt.Errorf("failed to complete upload: %w", err)

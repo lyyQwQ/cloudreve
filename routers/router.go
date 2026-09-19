@@ -40,7 +40,6 @@ func InitRouter(dep dependency.Dep) *gin.Engine {
 
 	l.Info("Current running mode: Slave.")
 	return initSlaveRouter(dep)
-
 }
 
 func newGinEngine(dep dependency.Dep) *gin.Engine {
@@ -631,8 +630,8 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 
 		hls := v4.Group("hls")
 		{
-			hls.GET(":fileId", hlssvc.GetStatus)
-			hls.DELETE(":fileId", hlssvc.Delete)
+			hls.GET(":fileId", middleware.RequiredScopes(types.ScopeFilesRead), hlssvc.GetStatus)
+			hls.DELETE(":fileId", middleware.RequiredScopes(types.ScopeFilesWrite), hlssvc.Delete)
 			hls.GET(":fileId/play/index.m3u8", hlssvc.PlayIndex)
 			hls.GET(":fileId/play/:segment", hlssvc.PlaySegment)
 		}
@@ -711,6 +710,11 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				controllers.FromJSON[explorer.DeleteFileService](explorer.DeleteFileParameterCtx{}),
 				middleware.ValidateBatchFileCount(dep, explorer.DeleteFileParameterCtx{}),
 				controllers.Delete,
+			)
+			// Empty trash bin
+			file.DELETE("trash",
+				middleware.RequiredScopes(types.ScopeFilesWrite),
+				controllers.EmptyTrash,
 			)
 			// Force unlock
 			file.DELETE("lock",
@@ -795,6 +799,13 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				controllers.FromJSON[explorer.ImportWorkflowService](explorer.CreateImportParamCtx{}),
 				controllers.ImportFiles,
 			)
+			// Create task to import files
+			wf.POST("rebuildFtsIndex",
+				middleware.IsAdmin(),
+				middleware.RequiredScopes(types.ScopeWorkflowWrite, types.ScopeAdminWrite),
+				controllers.FromJSON[explorer.RebuildFTSIndexWorkflowService](explorer.CreateRebuildFTSIndexParamCtx{}),
+				controllers.RebuildFTSIndex,
+			)
 
 			// 取得文件外链
 			source := file.Group("source")
@@ -875,6 +886,12 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				middleware.HashID(hashid.ShareID),
 				controllers.DeleteShare,
 			)
+			share.DELETE("",
+				middleware.LoginRequired(),
+				middleware.RequiredScopes(types.ScopeSharesWrite),
+				controllers.FromJSON[sharesvc.BatchDeleteShareService](sharesvc.BatchDeleteParamCtx{}),
+				controllers.BatchDeleteShare,
+			)
 			//// 获取README文本文件内容
 			//share.GET("readme/:id",
 			//	middleware.CheckShareUnlocked(),
@@ -890,10 +907,10 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 		// 需要登录保护的
 		auth := v4.Group("")
 		auth.Use(middleware.LoginRequired())
-		auth.Use(middleware.RequiredScopes(types.ScopeAdminRead))
 		{
 			// 管理
 			admin := auth.Group("admin", middleware.IsAdmin())
+			admin.Use(middleware.RequiredScopes(types.ScopeAdminRead))
 			{
 				admin.GET("summary",
 					controllers.FromQuery[adminsvc.SummaryService](adminsvc.SummaryParamCtx{}),
@@ -951,13 +968,16 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 				tool := admin.Group("tool")
 				{
 					tool.GET("wopi",
+						middleware.RequiredScopes(types.ScopeAdminWrite),
 						controllers.FromQuery[adminsvc.FetchWOPIDiscoveryService](adminsvc.FetchWOPIDiscoveryParamCtx{}),
 						controllers.AdminFetchWopi,
 					)
 					tool.POST("thumbExecutable",
+						middleware.RequiredScopes(types.ScopeAdminWrite),
 						controllers.FromJSON[adminsvc.ThumbGeneratorTestService](adminsvc.ThumbGeneratorTestParamCtx{}),
 						controllers.AdminTestThumbGenerator)
 					tool.POST("mail",
+						middleware.RequiredScopes(types.ScopeAdminWrite),
 						controllers.FromJSON[adminsvc.TestSMTPService](adminsvc.TestSMTPParamCtx{}),
 						controllers.AdminSendTestMail,
 					)
@@ -1034,6 +1054,7 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 					{
 						// 获取 OneDrive OAuth URL
 						oauth.POST("signin",
+							middleware.RequiredScopes(types.ScopeAdminWrite),
 							controllers.FromJSON[adminsvc.GetOauthRedirectService](adminsvc.GetOauthRedirectParamCtx{}),
 							controllers.AdminOdOAuthURL,
 						)
@@ -1075,11 +1096,13 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 						controllers.AdminGetNode,
 					)
 					node.POST("test",
+						middleware.RequiredScopes(types.ScopeAdminWrite),
 						controllers.FromJSON[adminsvc.TestNodeService](adminsvc.TestNodeParamCtx{}),
 						controllers.AdminTestSlave,
 					)
 					node.POST("test/downloader",
 						controllers.FromJSON[adminsvc.TestNodeDownloaderService](adminsvc.TestNodeDownloaderParamCtx{}),
+						middleware.RequiredScopes(types.ScopeAdminWrite),
 						controllers.AdminTestDownloader,
 					)
 					node.PUT("",

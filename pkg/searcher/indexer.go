@@ -39,6 +39,8 @@ type SearchIndexer interface {
 	// configuration (filterable/searchable attributes, etc.).
 	IndexReady(ctx context.Context) (bool, error)
 	EnsureIndex(ctx context.Context) error
+	// DeleteAll removes all documents from the index.
+	DeleteAll(ctx context.Context) error
 	Close() error
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
 	"github.com/cloudreve/Cloudreve/v4/pkg/setting"
 	"github.com/cloudreve/Cloudreve/v4/pkg/util"
+	hlssvc "github.com/cloudreve/Cloudreve/v4/service/hls"
 	"github.com/gin-gonic/gin"
 	"github.com/gofrs/uuid"
 	"github.com/samber/lo"
@@ -117,7 +118,17 @@ func (s *GetDirectLinkService) Get(c *gin.Context) ([]DirectLinkResponse, error)
 	}
 
 	res, err := m.GetDirectLink(c, uris...)
-	return BuildDirectLinkResponse(dep.SettingProvider().SiteURL(setting.UseFirstSiteUrl(c)), res), err
+	response := BuildDirectLinkResponse(dep.SettingProvider().SiteURL(setting.UseFirstSiteUrl(c)), res)
+	for i, link := range res {
+		if signed, signErr := hlssvc.PlaybackURL(c, dep, link.File.ID(), link.ID); signErr == nil {
+			base := dep.SettingProvider().SiteURL(setting.UseFirstSiteUrl(c))
+			u, parseErr := base.Parse(signed)
+			if parseErr == nil {
+				response[i].HLSUrl = u.String()
+			}
+		}
+	}
+	return response, err
 }
 
 func DeleteDirectLink(c *gin.Context) error {
@@ -578,6 +589,20 @@ func (s *DeleteFileService) Restore(c *gin.Context) error {
 	if err = m.Restore(c, uris...); err != nil {
 		return fmt.Errorf("failed to restore file: %w", err)
 
+	}
+
+	return nil
+}
+
+// EmptyTrash hard-deletes every top-level item in the current user's trash bin.
+func EmptyTrash(c *gin.Context) error {
+	dep := dependency.FromContext(c)
+	user := inventory.UserFromContext(c)
+	m := manager.NewFileManager(dep, user)
+	defer m.Recycle()
+
+	if err := m.EmptyTrash(c); err != nil {
+		return fmt.Errorf("failed to empty trash: %w", err)
 	}
 
 	return nil

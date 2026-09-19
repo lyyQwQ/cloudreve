@@ -651,6 +651,7 @@ func (d *dependency) MediaMetaQueue(ctx context.Context) queue.Queue {
 			queue.MediaMetaTaskType,
 			queue.FullTextIndexTaskType,
 			queue.FullTextDeleteTaskType,
+			queue.FullTextRebuildTaskType,
 			queue.FullTextCopyTaskType,
 			queue.FullTextChangeOwnerTaskType,
 		),

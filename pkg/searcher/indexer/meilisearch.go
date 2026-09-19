@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	indexName    = "cloudreve_files"
-	embedderName = "cr-text"
+	indexName         = "cloudreve_files"
+	embedderName      = "cr-text"
+	embeddingTemplate = "Chunk #{{doc.chunk_idx}} in a file named '{{doc.file_name}}': {{ doc.text }}"
 )
 
 // MeilisearchIndexer implements SearchIndexer using Meilisearch.
@@ -120,6 +121,7 @@ func (m *MeilisearchIndexer) EnsureIndex(ctx context.Context) error {
 			return nil
 		}
 
+		embedder.DocumentTemplate = embeddingTemplate
 		_, err := index.UpdateEmbeddersWithContext(ctx, map[string]meilisearch.Embedder{
 			embedderName: embedder,
 		})
@@ -377,6 +379,14 @@ func (m *MeilisearchIndexer) Search(ctx context.Context, ownerID int, query stri
 	}
 
 	return results, resp.EstimatedTotalHits, nil
+}
+
+func (m *MeilisearchIndexer) DeleteAll(ctx context.Context) error {
+	index := m.client.Index(indexName)
+	if _, err := index.DeleteAllDocumentsWithContext(ctx, nil); err != nil {
+		return fmt.Errorf("failed to delete all documents: %w", err)
+	}
+	return nil
 }
 
 func (m *MeilisearchIndexer) Close() error {

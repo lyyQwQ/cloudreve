@@ -41,6 +41,10 @@ func (n *NoopIndexer) EnsureIndex(ctx context.Context) error {
 	return nil
 }
 
+func (n *NoopIndexer) DeleteAll(ctx context.Context) error {
+	return nil
+}
+
 func (n *NoopIndexer) Close() error {
 	return nil
 }

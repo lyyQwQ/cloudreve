@@ -47,6 +47,7 @@ type (
 		ImportPhysical(ctx context.Context, dst *fs.URI, policyId int, src fs.PhysicalObject, completeHook bool) error
 	}
 	DirectLink struct {
+		ID   int
 		File fs.File
 		Url  string
 	}
@@ -108,6 +109,7 @@ func (m *manager) GetDirectLink(ctx context.Context, urls ...*fs.URI) ([]DirectL
 
 			linkHashID := hashid.EncodeSourceLinkID(m.hasher, link.ID)
 			res = append(res, DirectLink{
+				ID:   link.ID,
 				File: file,
 				Url:  routes.MasterDirectLink(siteUrl, linkHashID, link.Name).String(),
 			})

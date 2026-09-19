@@ -18,6 +18,7 @@ type TikaExtractor struct {
 	l           logging.Logger
 	exts        []string
 	maxFileSize int64
+	endpoint    string
 }
 
 // NewTikaExtractor creates a new TikaExtractor.
@@ -29,6 +30,7 @@ func NewTikaExtractor(client request.Client, settings setting.Provider, l loggin
 		l:           l,
 		exts:        exts,
 		maxFileSize: cfg.MaxFileSize,
+		endpoint:    cfg.Endpoint,
 	}
 }
 
@@ -44,12 +46,11 @@ func (t *TikaExtractor) MaxFileSize() int64 {
 
 // Extract sends the document to Tika and returns the extracted plain text.
 func (t *TikaExtractor) Extract(ctx context.Context, reader io.Reader) (string, error) {
-	tikaCfg := t.settings.FTSTikaExtractor(ctx)
-	if tikaCfg.Endpoint == "" {
+	if t.endpoint == "" {
 		return "", fmt.Errorf("tika endpoint not configured")
 	}
 
-	endpoint := strings.TrimRight(tikaCfg.Endpoint, "/") + "/tika"
+	endpoint := strings.TrimRight(t.endpoint, "/") + "/tika"
 	resp := t.client.Request(
 		"PUT",
 		endpoint,
@@ -67,13 +68,7 @@ func (t *TikaExtractor) Extract(ctx context.Context, reader io.Reader) (string, 
 		return "", fmt.Errorf("tika returned status %d", resp.Response.StatusCode)
 	}
 
-	maxSize := tikaCfg.MaxResponseSize
-	if maxSize <= 0 {
-		maxSize = 10 * 1024 * 1024 // default 10MB
-	}
-
-	limited := io.LimitReader(resp.Response.Body, maxSize)
-	body, err := io.ReadAll(limited)
+	body, err := io.ReadAll(resp.Response.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read tika response: %w", err)
 	}

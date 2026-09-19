@@ -237,6 +237,11 @@ type (
 		FTSTikaExtractor(ctx context.Context) *FTSTikaExtractorSetting
 		// FTSChunkSize returns the maximum chunk size in bytes for full-text search indexing.
 		FTSChunkSize(ctx context.Context) int
+		// DefaultViewerMapping returns the default viewer mapping.
+		DefaultViewerMapping(ctx context.Context) types.DefaultViewerMapping
+		// ExposeUserEmail returns true if user email should be exposed to other
+		// signed-in users in redacted responses.
+		ExposeUserEmail(ctx context.Context) bool
 	}
 	UseFirstSiteUrlCtxKey = struct{}
 )
@@ -326,6 +331,15 @@ func (s *settingProvider) Avatar(ctx context.Context) *Avatar {
 		Gravatar: s.getString(ctx, "gravatar_server", ""),
 		Path:     s.getString(ctx, "avatar_path", "avatar"),
 	}
+}
+
+func (s *settingProvider) DefaultViewerMapping(ctx context.Context) types.DefaultViewerMapping {
+	raw := s.getString(ctx, "viewer_default_apps", "{}")
+	var mapping types.DefaultViewerMapping
+	if err := json.Unmarshal([]byte(raw), &mapping); err != nil {
+		return types.DefaultViewerMapping{}
+	}
+	return mapping
 }
 
 func (s *settingProvider) FileViewers(ctx context.Context) []types.ViewerGroup {
@@ -658,10 +672,9 @@ func (s *settingProvider) FTSIndexMeilisearch(ctx context.Context) *FTSIndexMeil
 
 func (s *settingProvider) FTSTikaExtractor(ctx context.Context) *FTSTikaExtractorSetting {
 	return &FTSTikaExtractorSetting{
-		Endpoint:        s.getString(ctx, "fts_tika_endpoint", ""),
-		MaxResponseSize: s.getInt64(ctx, "fts_tika_max_response_size", 10485760),
-		Exts:            s.getStringList(ctx, "fts_tika_exts", []string{}),
-		MaxFileSize:     s.getInt64(ctx, "fts_tika_max_file_size_remote", 52428800),
+		Endpoint:    s.getString(ctx, "fts_tika_endpoint", ""),
+		Exts:        s.getStringList(ctx, "fts_tika_exts", []string{}),
+		MaxFileSize: s.getInt64(ctx, "fts_tika_max_file_size_remote", 52428800),
 	}
 }
 
@@ -672,7 +685,7 @@ func (s *settingProvider) FTSChunkSize(ctx context.Context) int {
 func (s *settingProvider) Queue(ctx context.Context, queueType QueueType) *QueueSetting {
 	queueTypeStr := string(queueType)
 	return &QueueSetting{
-		WorkerNum:          s.getInt(ctx, "queue_"+queueTypeStr+"_worker_num,", 15),
+		WorkerNum:          s.getInt(ctx, "queue_"+queueTypeStr+"_worker_num", 15),
 		MaxExecution:       time.Duration(s.getInt(ctx, "queue_"+queueTypeStr+"_max_execution", 86400)) * time.Second,
 		BackoffFactor:      s.getFloat64(ctx, "queue_"+queueTypeStr+"_backoff_factor", 4),
 		BackoffMaxDuration: time.Duration(s.getInt(ctx, "queue_"+queueTypeStr+"_backoff_max_duration", 3600)) * time.Second,
@@ -870,6 +883,10 @@ func (s *settingProvider) AuthnEnabled(ctx context.Context) bool {
 
 func (s *settingProvider) RegisterEnabled(ctx context.Context) bool {
 	return s.getBoolean(ctx, "register_enabled", false)
+}
+
+func (s *settingProvider) ExposeUserEmail(ctx context.Context) bool {
+	return s.getBoolean(ctx, "expose_user_email", true)
 }
 
 func (s *settingProvider) SiteBasic(ctx context.Context) *SiteBasic {

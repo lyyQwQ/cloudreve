@@ -164,6 +164,9 @@ func (handler *Driver) List(ctx context.Context, base string, onProgress driver.
 
 	// 处理文件
 	for _, object := range objects {
+		if strings.HasSuffix(*object.Key, "/") && *object.Size == 0 {
+			continue
+		}
 		rel, err := filepath.Rel(*opt.Prefix, *object.Key)
 		if err != nil {
 			continue
@@ -180,7 +183,6 @@ func (handler *Driver) List(ctx context.Context, base string, onProgress driver.
 	onProgress(len(objects))
 
 	return res, nil
-
 }
 
 // Open 打开文件
@@ -418,6 +420,10 @@ func (handler *Driver) Meta(ctx context.Context, path string) (*MetaData, error)
 
 	if err != nil {
 		return nil, err
+	}
+
+	if res == nil || res.ContentLength == nil {
+		return nil, errors.New("invalid response from S3: missing ContentLength")
 	}
 
 	etag := ""

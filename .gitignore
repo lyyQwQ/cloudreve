@@ -8,6 +8,9 @@
 *.bin
 /release/
 application/statics/assets.zip
+master_v4
+slave_v4
+__debug*
 
 # Test binary, build with `go test -c`
 *.test
@@ -39,3 +42,7 @@ cloudreve
 .trellis/
 .sisyphus/
 .ssh/
+.DS_Store
+
+# Local recovery backups
+.bak/

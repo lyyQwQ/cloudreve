@@ -54,7 +54,7 @@ func (f *DBFS) Create(ctx context.Context, path *fs.URI, fileType types.FileType
 
 		// File with the same name but different type already exist
 		return nil, fs.ErrFileExisted.
-			WithError(fmt.Errorf("object with the same name but different type %q already exist", ancestor.Type()))
+			WithError(fmt.Errorf("object with the same name but different type %v already exist", ancestor.Type()))
 	}
 
 	if _, ok := ctx.Value(ByPassOwnerCheckCtxKey{}).(bool); !ok && ancestor.Owner().ID != f.user.ID {
@@ -305,10 +305,7 @@ func (f *DBFS) SoftDelete(ctx context.Context, path ...*fs.URI) error {
 			return serializer.NewError(serializer.CodeDBError, "failed to soft-delete file", err)
 		}
 
-		if err := inventory.ClearHLSAvailableMetadata(ctx, fc.GetClient(), target.ID()); err != nil {
-			_ = inventory.Rollback(tx)
-			return serializer.NewError(serializer.CodeDBError, "failed to clear hls metadata", err)
-		}
+		// 回收站保留切片和可用标记，访问层沿祖先链阻断；恢复无需重新转码。
 
 		// Save restore uri into metadata
 		if err := fc.UpsertMetadata(ctx, target.Model, map[string]string{
@@ -747,8 +744,14 @@ func (f *DBFS) TraverseFile(ctx context.Context, fileID int) (fs.File, error) {
 		rootUri = newTrashUri(root.Name())
 	}
 
+	navigator, err := f.getNavigator(ctx, rootUri)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get navigator for root file: %w", err)
+	}
+
 	root.Path[pathIndexRoot] = rootUri
 	root.Path[pathIndexUser] = rootUri
+	file.CapabilitiesBs = navigator.Capabilities(false).Capability
 
 	return file, nil
 }
@@ -1000,6 +1003,11 @@ func (f *DBFS) moveFiles(ctx context.Context, targets []*File, destination *File
 		if err := fc.RemoveMetadata(ctx, file.Model, MetadataRestoreUri, MetadataExpectedCollectTime); err != nil {
 			return storageDiff, nil, serializer.NewError(serializer.CodeDBError, "Failed to remove trash related metadata", err)
 		}
+		// 兼容旧版入回收站时已清除的 HLS 标记，恢复后按现存产物重新显示。
+		if err := inventory.SyncHLSAvailabilityByArtifact(ctx, fc.GetClient(), file.ID()); err != nil {
+			return storageDiff, nil, serializer.NewError(serializer.CodeDBError, "Failed to restore HLS metadata", err)
+		}
+
 	}
 
 	return storageDiff, nil, nil

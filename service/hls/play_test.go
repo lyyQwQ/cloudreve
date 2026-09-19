@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -125,6 +126,9 @@ func newRouter(dep dependency.Dep) *gin.Engine {
 	r.ContextWithFallback = true
 	r.Use(func(c *gin.Context) {
 		ctx := context.WithValue(c.Request.Context(), dependency.DepCtx{}, dep)
+		// 默认测试模拟文件所有者登录；匿名/跨用户场景使用独立路由。
+		owner, _ := dep.DBClient().User.Query().First(ctx)
+		ctx = context.WithValue(ctx, inventory.UserCtx{}, owner)
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	})
@@ -266,7 +270,11 @@ func TestHLSPlay_AcceptsHashIDFileID(t *testing.T) {
 		t.Fatalf("expected 200 for hashid index, got %d, body=%s", indexResp.Code, indexResp.Body.String())
 	}
 
-	signed, err := auth.SignURI(context.Background(), dep.GeneralAuth(), fmt.Sprintf("/api/v4/hls/%s/play/000.ts", hashID), nil)
+	signedURL := mustSignSegmentPath(t, dep, fileID, "000.ts", nil)
+	parsed, _ := url.Parse(signedURL)
+	q := parsed.Query()
+	q.Del("sign")
+	signed, err := signPlaybackURI(context.Background(), dep.GeneralAuth(), fmt.Sprintf("/api/v4/hls/%s/play/000.ts?%s", hashID, q.Encode()), nil)
 	if err != nil {
 		t.Fatalf("sign hashid segment path: %v", err)
 	}
@@ -485,7 +493,12 @@ func createVideoFileFixture(t *testing.T, client *ent.Client, userID int) int {
 		t.Fatalf("create entity: %v", err)
 	}
 
+	root, err := client.File.Create().SetType(int(types.FileTypeFolder)).SetName(inventory.RootFolderName).SetOwnerID(userID).Save(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	file, err := client.File.Create().
+		SetFileChildren(root.ID).
 		SetType(int(types.FileTypeFile)).
 		SetName(filepath.Base(videoPath)).
 		SetOwnerID(userID).

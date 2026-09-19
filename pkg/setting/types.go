@@ -258,10 +258,9 @@ type FTSIndexMeilisearchSetting struct {
 }
 
 type FTSTikaExtractorSetting struct {
-	Endpoint        string
-	MaxResponseSize int64
-	Exts            []string
-	MaxFileSize     int64
+	Endpoint    string
+	Exts        []string
+	MaxFileSize int64
 }
 
 type MasterEncryptKeyVaultType string

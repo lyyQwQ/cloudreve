@@ -494,7 +494,7 @@ func (f *DBFS) Get(ctx context.Context, path *fs.URI, opts ...fs.Option) (fs.Fil
 
 			// cache the summary
 			newSummary.CalculatedAt = time.Now()
-			f.cache.Set(fmt.Sprintf("%s%d", folderSummaryCachePrefix, target.ID()), newSummary, f.settingClient.FolderPropsCacheTTL(ctx))
+			f.cache.Set(fmt.Sprintf("%s%d", folderSummaryCachePrefix, target.ID()), *newSummary, f.settingClient.FolderPropsCacheTTL(ctx))
 			target.FileFolderSummary = newSummary
 		}
 	}
@@ -764,7 +764,7 @@ func (f *DBFS) getNavigator(ctx context.Context, path *fs.URI, requiredCapabilit
 	capabilities := res.Capabilities(false).Capability
 	for _, capability := range requiredCapabilities {
 		if !capabilities.Enabled(int(capability)) {
-			return nil, fs.ErrNotSupportedAction.WithError(fmt.Errorf("action %q is not supported under current fs", capability))
+			return nil, fs.ErrNotSupportedAction.WithError(fmt.Errorf("action %v is not supported under current fs", capability))
 		}
 	}
 

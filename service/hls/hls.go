@@ -3,6 +3,7 @@ package hls
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,14 +15,13 @@ import (
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/hlsartifact"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
-	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
 	"github.com/gin-gonic/gin"
 )
 
 var (
-	segmentNamePattern = regexp.MustCompile(`^(\d{3}\.ts|segment_\d{5}\.ts)$`)
+	segmentNamePattern = regexp.MustCompile(`^(\d{3}\.ts|segment_\d{5,}\.ts)$`)
 )
 
 func GetStatus(c *gin.Context) {
@@ -32,7 +32,7 @@ func GetStatus(c *gin.Context) {
 	}
 
 	if !fileExists(c, dep, fileID) {
-		legacyStubResponse(c)
+		notFound(c, "source file not found")
 		return
 	}
 
@@ -46,6 +46,14 @@ func GetStatus(c *gin.Context) {
 		return
 	}
 
+	if !authorizeFile(c, dep, fileID, false) {
+		return
+	}
+	playURL, err := requestPlaybackURL(c, dep, fileID)
+	if err != nil {
+		internalError(c, "failed to sign playback", err)
+		return
+	}
 	diskAvailable := false
 	if _, err := os.Stat(filepath.Join(artifact.StoragePath, "index.m3u8")); err == nil {
 		diskAvailable = true
@@ -54,9 +62,10 @@ func GetStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, serializer.Response{Code: 0, Msg: "ok", Data: gin.H{
 		"file_id":        fileID,
 		"has_hls":        true,
+		"play_url":       playURL,
 		"disk_available": diskAvailable,
 		"artifact": gin.H{
-			"storage_path":  artifact.StoragePath,
+
 			"segment_count": artifact.SegmentCount,
 			"total_size":    artifact.TotalSize,
 			"codec":         artifact.Codec,
@@ -76,6 +85,9 @@ func Delete(c *gin.Context) {
 		return
 	}
 
+	if !authorizeFile(c, dep, fileID, true) {
+		return
+	}
 	file, err := dep.DBClient().File.Get(c, fileID)
 	if err != nil {
 		if ent.IsNotFound(err) {
@@ -139,7 +151,7 @@ func PlayIndex(c *gin.Context) {
 	}
 
 	if !fileExists(c, dep, fileID) {
-		legacyStubResponse(c)
+		notFound(c, "source file not found")
 		return
 	}
 
@@ -153,6 +165,25 @@ func PlayIndex(c *gin.Context) {
 		return
 	}
 
+	// 已登录所有者可直接播放；公开客户端必须使用签名链接。
+	if c.Request.URL.Query().Get("sign") == "" {
+		if !authorizeFile(c, dep, fileID, false) {
+			return
+		}
+		signed, err := requestPlaybackURL(c, dep, fileID)
+		if err != nil {
+			internalError(c, "failed to sign playback", err)
+			return
+		}
+		c.Request.URL, err = url.Parse(signed)
+		if err != nil {
+			internalError(c, "invalid playback url", err)
+			return
+		}
+	}
+	if !authorizePlayback(c, dep, fileID, artifact) {
+		return
+	}
 	playlistPath := filepath.Join(artifact.StoragePath, "index.m3u8")
 	raw, err := os.ReadFile(playlistPath)
 	if err != nil {
@@ -170,6 +201,7 @@ func PlayIndex(c *gin.Context) {
 		return
 	}
 
+	c.Header("Cache-Control", "private, no-store")
 	c.Data(http.StatusOK, "application/vnd.apple.mpegurl", []byte(rewritten))
 }
 
@@ -181,7 +213,7 @@ func PlaySegment(c *gin.Context) {
 	}
 
 	if !fileExists(c, dep, fileID) {
-		legacyStubResponse(c)
+		notFound(c, "source file not found")
 		return
 	}
 
@@ -201,13 +233,12 @@ func PlaySegment(c *gin.Context) {
 		return
 	}
 
-	if err := auth.CheckURI(c, dep.GeneralAuth(), c.Request.URL); err != nil {
-		c.JSON(http.StatusForbidden, serializer.Response{Code: serializer.CodeCredentialInvalid, Msg: "invalid sign", Error: err.Error()})
+	if !authorizePlayback(c, dep, fileID, artifact) {
 		return
 	}
 
 	segmentPath := filepath.Join(artifact.StoragePath, segment)
-	raw, err := os.ReadFile(segmentPath)
+	f, err := os.Open(segmentPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			notFound(c, "hls segment not found")
@@ -217,7 +248,15 @@ func PlaySegment(c *gin.Context) {
 		return
 	}
 
-	c.Data(http.StatusOK, "video/mp2t", raw)
+	defer f.Close()
+	stat, err := f.Stat()
+	if err != nil {
+		notFound(c, "segment not found")
+		return
+	}
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("Content-Type", "video/mp2t")
+	http.ServeContent(c.Writer, c.Request, segment, stat.ModTime(), f)
 }
 
 func parsePlayableFileID(c *gin.Context, dep dependency.Dep) (int, bool) {
@@ -247,12 +286,13 @@ func parsePlayableFileID(c *gin.Context, dep dependency.Dep) (int, bool) {
 func rewritePlaylistWithSignedSegments(c *gin.Context, dep dependency.Dep, fileID int, playlist string) (string, error) {
 	lines := strings.Split(playlist, "\n")
 
-	expire := dep.SettingProvider().EntityUrlValidDuration(c)
-	var expireAt *time.Time
-	if expire > 0 {
-		t := time.Now().Add(expire)
-		expireAt = &t
+	until, err := strconv.ParseInt(c.Request.URL.Query().Get("until"), 10, 64)
+	if err != nil {
+		return "", err
 	}
+	expireAt := time.Unix(until, 0)
+	q := c.Request.URL.Query()
+	q.Del("sign")
 
 	for i := range lines {
 		line := strings.TrimSpace(lines[i])
@@ -264,7 +304,7 @@ func rewritePlaylistWithSignedSegments(c *gin.Context, dep dependency.Dep, fileI
 			return "", fmt.Errorf("invalid segment name in m3u8: %s", line)
 		}
 
-		signed, err := auth.SignURI(c, dep.GeneralAuth(), fmt.Sprintf("/api/v4/hls/%d/play/%s", fileID, line), expireAt)
+		signed, err := signPlaybackURI(c, dep.GeneralAuth(), fmt.Sprintf("/api/v4/hls/%d/play/%s?%s", fileID, line, q.Encode()), &expireAt)
 		if err != nil {
 			return "", err
 		}

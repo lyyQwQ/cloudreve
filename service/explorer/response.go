@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
@@ -60,8 +59,8 @@ func BuildArchiveListFilesResponse(files []manager.ArchivedFile) *ArchiveListFil
 }
 
 type PutRelativeResponse struct {
-	Name string
-	Url  string
+	Name string `json:"Name"`
+	Url  string `json:"Url"`
 }
 
 type DirectLinkResponse struct {
@@ -77,17 +76,9 @@ func BuildDirectLinkResponse(siteURL *url.URL, links []manager.DirectLink) []Dir
 
 	var res []DirectLinkResponse
 	for _, link := range links {
-		hlsURL := ""
-		if md := link.File.Metadata(); md != nil {
-			if strings.TrimSpace(md["hls:available"]) == "1" {
-				hlsURL = buildHLSIndexURL(siteURL, link.File.ID())
-			}
-		}
-
 		res = append(res, DirectLinkResponse{
 			Link:    link.Url,
 			FileUrl: link.File.Uri(false).String(),
-			HLSUrl:  hlsURL,
 		})
 	}
 	return res
@@ -220,45 +211,45 @@ func BuildUploadSessionResponse(session *fs.UploadCredential, hasher hashid.Enco
 // WopiFileInfo Response for `CheckFileInfo`
 type WopiFileInfo struct {
 	// Required
-	BaseFileName string
-	Version      string
-	Size         int64
+	BaseFileName string `json:"BaseFileName"`
+	Version      string `json:"Version"`
+	Size         int64  `json:"Size"`
 
 	// Breadcrumb
-	BreadcrumbBrandName  string
-	BreadcrumbBrandUrl   string
-	BreadcrumbFolderName string
-	BreadcrumbFolderUrl  string
+	BreadcrumbBrandName  string `json:"BreadcrumbBrandName"`
+	BreadcrumbBrandUrl   string `json:"BreadcrumbBrandUrl"`
+	BreadcrumbFolderName string `json:"BreadcrumbFolderName"`
+	BreadcrumbFolderUrl  string `json:"BreadcrumbFolderUrl"`
 
 	// Post Message
-	FileSharingPostMessage bool
-	FileVersionPostMessage bool
-	ClosePostMessage       bool
-	PostMessageOrigin      string
+	FileSharingPostMessage bool   `json:"FileSharingPostMessage"`
+	FileVersionPostMessage bool   `json:"FileVersionPostMessage"`
+	ClosePostMessage       bool   `json:"ClosePostMessage"`
+	PostMessageOrigin      string `json:"PostMessageOrigin"`
 
 	// Other miscellaneous properties
-	FileNameMaxLength int
-	LastModifiedTime  string
+	FileNameMaxLength int    `json:"FileNameMaxLength"`
+	LastModifiedTime  string `json:"LastModifiedTime"`
 
 	// User metadata
-	IsAnonymousUser  bool
-	UserFriendlyName string
-	UserId           string
-	OwnerId          string
+	IsAnonymousUser  bool   `json:"IsAnonymousUser"`
+	UserFriendlyName string `json:"UserFriendlyName"`
+	UserId           string `json:"UserId"`
+	OwnerId          string `json:"OwnerId"`
 
 	// Permission
-	ReadOnly                bool
-	UserCanRename           bool
-	UserCanReview           bool
-	UserCanWrite            bool
-	UserCanNotWriteRelative bool
+	ReadOnly                bool `json:"ReadOnly"`
+	UserCanRename           bool `json:"UserCanRename"`
+	UserCanReview           bool `json:"UserCanReview"`
+	UserCanWrite            bool `json:"UserCanWrite"`
+	UserCanNotWriteRelative bool `json:"UserCanNotWriteRelative"`
 
-	SupportsRename    bool
-	SupportsReviewing bool
-	SupportsUpdate    bool
-	SupportsLocks     bool
+	SupportsRename    bool `json:"SupportsRename"`
+	SupportsReviewing bool `json:"SupportsReviewing"`
+	SupportsUpdate    bool `json:"SupportsUpdate"`
+	SupportsLocks     bool `json:"SupportsLocks"`
 
-	EnableShare bool
+	EnableShare bool `json:"EnableShare"`
 }
 
 type ViewerSessionResponse struct {
@@ -367,7 +358,7 @@ type Share struct {
 	SourceUri string `json:"source_uri,omitempty"`
 }
 
-func BuildShare(s *ent.Share, base *url.URL, hasher hashid.Encoder, requester *ent.User, owner *ent.User,
+func BuildShare(ctx context.Context, s *ent.Share, base *url.URL, hasher hashid.Encoder, requester *ent.User, owner *ent.User,
 	name string, t types.FileType, unlocked bool, expired bool) *Share {
 	redactLevel := user.RedactLevelAnonymous
 	if !inventory.IsAnonymousUser(requester) {
@@ -377,7 +368,7 @@ func BuildShare(s *ent.Share, base *url.URL, hasher hashid.Encoder, requester *e
 		Name:              name,
 		ID:                hashid.EncodeShareID(hasher, s.ID),
 		Unlocked:          unlocked,
-		Owner:             user.BuildUserRedacted(owner, redactLevel, hasher),
+		Owner:             user.BuildUserRedacted(ctx, owner, redactLevel, hasher),
 		Expired:           inventory.IsShareExpired(s) != nil || expired,
 		Url:               BuildShareLink(s, hasher, base, unlocked),
 		CreatedAt:         s.CreatedAt,
@@ -470,7 +461,7 @@ func BuildExtendedInfo(ctx context.Context, u *ent.User, f fs.File, hasher hashi
 		StoragePolicy: BuildStoragePolicy(extendedInfo.StoragePolicy, hasher),
 		StorageUsed:   extendedInfo.StorageUsed,
 		Entities: lo.Map(f.Entities(), func(e fs.Entity, index int) Entity {
-			return BuildEntity(extendedInfo, e, hasher)
+			return BuildEntity(ctx, extendedInfo, e, hasher)
 		}),
 		DirectLinks: lo.Map(extendedInfo.DirectLinks, func(d *ent.DirectLink, index int) DirectLink {
 			return BuildDirectLink(d, hasher, base)
@@ -480,7 +471,7 @@ func BuildExtendedInfo(ctx context.Context, u *ent.User, f fs.File, hasher hashi
 	if u.ID == f.OwnerID() {
 		// Only owner can see the shares settings.
 		ext.Shares = lo.Map(extendedInfo.Shares, func(s *ent.Share, index int) Share {
-			return *BuildShare(s, base, hasher, u, u, f.DisplayName(), f.Type(), true, false)
+			return *BuildShare(ctx, s, base, hasher, u, u, f.DisplayName(), f.Type(), true, false)
 		})
 		ext.View = extendedInfo.View
 	}
@@ -497,11 +488,11 @@ func BuildDirectLink(d *ent.DirectLink, hasher hashid.Encoder, base *url.URL) Di
 	}
 }
 
-func BuildEntity(extendedInfo *fs.FileExtendedInfo, e fs.Entity, hasher hashid.Encoder) Entity {
+func BuildEntity(ctx context.Context, extendedInfo *fs.FileExtendedInfo, e fs.Entity, hasher hashid.Encoder) Entity {
 	var u *user.User
 	createdBy := e.CreatedBy()
 	if createdBy != nil {
-		userRedacted := user.BuildUserRedacted(e.CreatedBy(), user.RedactLevelAnonymous, hasher)
+		userRedacted := user.BuildUserRedacted(ctx, e.CreatedBy(), user.RedactLevelAnonymous, hasher)
 		u = &userRedacted
 	}
 

@@ -30,12 +30,15 @@ var (
 			}
 		},
 	}
-	defaultView = &types.ExplorerView{
+)
+
+func getDefaultView() *types.ExplorerView {
+	return &types.ExplorerView{
 		PageSize:  defaultPageSize,
 		View:      "grid",
 		Thumbnail: true,
 	}
-)
+}
 
 type (
 	File struct {
@@ -121,6 +124,10 @@ func (f *File) SizeUsed() int64 {
 	return lo.SumBy(f.Entities(), func(item fs.Entity) int64 {
 		return item.Size()
 	})
+}
+
+func (f *File) InTrashBin() bool {
+	return f.Root().Name() != inventory.RootFolderName
 }
 
 func (f *File) UpdatedAt() time.Time {
@@ -213,7 +220,7 @@ func (f *File) View() *types.ExplorerView {
 		current = current.Parent
 	}
 
-	return defaultView
+	return getDefaultView()
 }
 
 // UserRoot return the root file from user's view.
@@ -365,6 +372,10 @@ func (f *File) Recycle() {
 	f.Parent = nil
 	f.OwnerModel = nil
 	f.IsUserRoot = false
+	f.CapabilitiesBs = nil
+	f.FileExtendedInfo = nil
+	f.FileFolderSummary = nil
+	f.disableView = false
 	f.mu = nil
 
 	filePool.Put(f)

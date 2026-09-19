@@ -1,5 +1,5 @@
 ARG NODE_IMAGE=node:20-alpine
-ARG GO_IMAGE=golang:1.25-alpine
+ARG GO_IMAGE=golang:1.26.8-alpine
 ARG CACHEBUST=0
 
 FROM ${NODE_IMAGE} AS frontend-builder
@@ -76,7 +76,7 @@ COPY --from=backend-builder /src/cloudreve ./cloudreve
 RUN chmod +x ./cloudreve \
     && chmod +x ./entrypoint.sh
 
-EXPOSE 5212 443
+EXPOSE 5212 443 6888 6888/udp
 
 VOLUME ["/cloudreve/data"]
 

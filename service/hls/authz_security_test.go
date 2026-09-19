@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
+	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/gin-gonic/gin"
 )
 
@@ -80,10 +80,22 @@ func TestHLSPlaySegment_AuthBypassReturnsForbidden(t *testing.T) {
 	}
 }
 
-func mustSignSegmentPath(t *testing.T, dep interface{ GeneralAuth() auth.Auth }, fileID int, segment string, expires *time.Time) string {
+func mustSignSegmentPath(t *testing.T, dep dependency.Dep, fileID int, segment string, expires *time.Time) string {
 	t.Helper()
 
-	signed, err := auth.SignURI(context.Background(), dep.GeneralAuth(), fmt.Sprintf("/api/v4/hls/%d/play/%s", fileID, segment), expires)
+	index, err := PlaybackURL(context.Background(), dep, fileID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(index)
+	q := u.Query()
+	q.Del("sign")
+	if expires == nil {
+		v := time.Now().Add(time.Hour)
+		expires = &v
+	}
+	q.Set("until", fmt.Sprint(expires.Unix()))
+	signed, err := signPlaybackURI(context.Background(), dep.GeneralAuth(), fmt.Sprintf("/api/v4/hls/%d/play/%s?%s", fileID, segment, q.Encode()), expires)
 	if err != nil {
 		t.Fatalf("sign segment path: %v", err)
 	}
