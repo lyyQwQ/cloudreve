@@ -6,6 +6,14 @@ node_modules/
 .sisyphus/
 .trellis/
 .ssh/
+.bak/
+.tasks/
+.agents/
+.claude/
+.codex/
+.cursor/
+.env
+.env.*
 tmp/
 *.md
 .vscode/
