@@ -46,3 +46,11 @@ cloudreve
 
 # Local recovery backups
 .bak/
+
+# Local agent and editor state
+.agents/
+.claude/
+.codex/
+.cursor/
+.tasks/
+AGENTS.md
