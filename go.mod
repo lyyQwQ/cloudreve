@@ -2,7 +2,7 @@ module github.com/cloudreve/Cloudreve/v4
 
 go 1.26.0
 
-toolchain go1.26.8
+toolchain go1.26.10
 
 require (
 	entgo.io/ent v0.13.0
@@ -35,7 +35,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/securecookie v1.1.2
 	github.com/gorilla/sessions v1.2.2
-	github.com/gorilla/websocket v1.5.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/huaweicloud/huaweicloud-sdk-go-obs v3.24.6+incompatible
 	github.com/jinzhu/gorm v1.9.11
 	github.com/jpillora/backoff v1.0.0
@@ -60,9 +60,9 @@ require (
 	github.com/wneessen/go-mail v0.7.2
 	golang.org/x/exp v0.0.0-20240904232852-e7e105dedf7e
 	golang.org/x/image v0.41.0
-	golang.org/x/text v0.37.0
+	golang.org/x/text v0.42.0
 	golang.org/x/time v0.12.0
-	golang.org/x/tools v0.44.0
+	golang.org/x/tools v0.49.0
 	modernc.org/sqlite v1.30.0
 )
 
@@ -140,16 +140,16 @@ require (
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.0 // indirect
-	github.com/ulikunitz/xz v0.5.12 // indirect
+	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/zclconf/go-cty v1.8.0 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/arch v0.22.0 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/mod v0.35.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

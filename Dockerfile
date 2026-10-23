@@ -1,5 +1,5 @@
 ARG NODE_IMAGE=node:20-alpine
-ARG GO_IMAGE=golang:1.26.8-alpine
+ARG GO_IMAGE=golang:1.26.10-alpine
 ARG CACHEBUST=0
 
 FROM ${NODE_IMAGE} AS frontend-builder
